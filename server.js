@@ -161,7 +161,7 @@ app.get("/api/state", async (_, res) => {
         pollInProgress = poll().finally(() => { pollInProgress = null; });
       }
       try {
-        await Promise.race([pollInProgress, new Promise(r => setTimeout(r, 55000))]);
+        await Promise.race([pollInProgress, new Promise(r => setTimeout(r, 25000))]);
       } catch (err) {
         console.warn("  ⚠ Poll failed:", err.message);
       }
@@ -523,9 +523,10 @@ function findTopMover(probsNow, probs1hAgo) {
 
 async function fetchGeoEvents() {
   const allEvents = [];
-  for (let offset = 0; offset < EVENTS_MAX_PAGES * EVENTS_LIMIT; offset += EVENTS_LIMIT) {
+  const maxPages = process.env.VERCEL ? 1 : EVENTS_MAX_PAGES;
+  for (let offset = 0; offset < maxPages * EVENTS_LIMIT; offset += EVENTS_LIMIT) {
     const url = `${GAMMA_URL}/events?active=true&closed=false&limit=${EVENTS_LIMIT}&offset=${offset}&order=volume24hr&ascending=false`;
-    const res = await fetch(url, { timeout: 10_000 });
+    const res = await fetch(url, { timeout: process.env.VERCEL ? 8_000 : 10_000 });
     if (!res.ok) throw new Error(`Gamma API ${res.status}`);
     const data = await res.json();
     if (!data || !data.length) break;
@@ -871,6 +872,7 @@ async function poll() {
       let hasSmartWallet = false;
       const firstMarket = apiEvent.markets && apiEvent.markets[0];
       const conditionId = firstMarket?.conditionId || firstMarket?.id || id;
+      if (!process.env.VERCEL) {
       try {
         const trades = await fetchRecentTrades(conditionId);
         for (const t of trades) {
@@ -890,6 +892,7 @@ async function poll() {
         }
         if (state.trades.length > 100) state.trades = state.trades.slice(0, 100);
       } catch (_) {}
+      }
 
       ev.maxSingleTrade = maxSingleTrade;
       ev.hasSmartWallet = hasSmartWallet;

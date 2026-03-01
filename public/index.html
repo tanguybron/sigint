@@ -271,8 +271,8 @@ let activeView   = "markets"; // "markets" | "clusters"
 let activeClusterEventIds = null;
 let volHistory   = [];
 
-// ── SSE / POLLING (fallback for Vercel serverless) ────────────
-let usePolling = false;
+// ── SSE / POLLING (Vercel uses polling only; local uses SSE) ───
+let usePolling = window.location.hostname.includes("vercel.app");
 let sseErrorCount = 0;
 
 function connect() {
