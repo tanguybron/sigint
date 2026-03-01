@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SIGINT — Polymarket Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700;900&family=Barlow:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #040608; --bg2: #080d12; --bg3: #0d1520;
+    --border: rgba(0,200,120,0.15);
+    --green: #00e87a; --green-dim: rgba(0,232,122,0.6);
+    --red: #ff3b5c;   --red-dim: rgba(255,59,92,0.6);
+    --amber: #ffb800; --amber-dim: rgba(255,184,0,0.6);
+    --cyan: #00cfff;
+    --text: rgba(200,220,210,0.9); --text-dim: rgba(150,180,165,0.5);
+    --mono: 'Share Tech Mono', monospace;
+    --cond: 'Barlow Condensed', sans-serif;
+    --body: 'Barlow', sans-serif;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:var(--body); min-height:100vh; overflow-x:hidden; cursor:crosshair; }
+  body::before { content:''; position:fixed; inset:0; background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.03) 2px,rgba(0,0,0,0.03) 4px); pointer-events:none; z-index:1000; }
+
+  /* ── TOP BAR ── */
+  .topbar { display:flex; align-items:center; justify-content:space-between; padding:12px 24px; border-bottom:1px solid var(--border); background:linear-gradient(90deg,rgba(0,232,122,0.03),transparent 40%); position:sticky; top:0; z-index:100; backdrop-filter:blur(8px); }
+  .logo { font-family:var(--cond); font-weight:900; font-size:22px; letter-spacing:6px; color:var(--green); text-shadow:0 0 20px rgba(0,232,122,0.4); }
+  .logo span { color:var(--text-dim); font-weight:300; }
+  .status-row { display:flex; gap:20px; align-items:center; }
+  .status-pill { font-family:var(--mono); font-size:10px; padding:4px 10px; border:1px solid; display:flex; align-items:center; gap:6px; }
+  .status-pill.live { border-color:var(--green); color:var(--green); }
+  .status-pill.warn { border-color:var(--amber); color:var(--amber); }
+  .status-pill.mock { border-color:var(--text-dim); color:var(--text-dim); }
+  .dot { width:6px; height:6px; border-radius:50%; background:currentColor; animation:blink 1.2s ease infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+  .clock { font-family:var(--mono); font-size:11px; color:var(--text-dim); }
+
+  /* ── MAIN GRID ── */
+  .main { display:grid; grid-template-columns:260px 1fr 300px; height:calc(100vh - 53px); }
+
+  /* ── SIDEBAR LEFT ── */
+  .sidebar-left { border-right:1px solid var(--border); padding:16px; overflow-y:auto; display:flex; flex-direction:column; gap:20px; }
+  .section-label { font-family:var(--mono); font-size:9px; letter-spacing:3px; color:var(--text-dim); border-bottom:1px solid var(--border); padding-bottom:6px; margin-bottom:10px; }
+
+  .threat-display { background:var(--bg3); border:1px solid rgba(255,59,92,0.3); padding:14px; }
+  .threat-level { font-family:var(--cond); font-size:48px; font-weight:900; line-height:1; color:var(--red); text-shadow:0 0 30px rgba(255,59,92,0.5); transition:color 0.5s; }
+  .threat-level.amber { color:var(--amber); text-shadow:0 0 30px rgba(255,184,0,0.5); }
+  .threat-level.green { color:var(--green); text-shadow:0 0 30px rgba(0,232,122,0.4); }
+  .threat-sub { font-family:var(--mono); font-size:9px; color:var(--red-dim); margin-top:4px; letter-spacing:2px; }
+  .threat-bar-wrap { margin-top:10px; height:4px; background:rgba(255,59,92,0.1); }
+  .threat-bar-fill { height:100%; background:linear-gradient(90deg,var(--amber),var(--red)); box-shadow:0 0 10px rgba(255,59,92,0.6); transition:width 1s ease; animation:pulseBar 2s ease infinite; }
+  @keyframes pulseBar { 0%,100%{opacity:1} 50%{opacity:0.7} }
+
+  .cat-item { display:flex; align-items:center; justify-content:space-between; padding:7px 10px; margin-bottom:3px; cursor:pointer; border:1px solid transparent; font-family:var(--cond); font-size:13px; letter-spacing:1px; transition:all 0.15s; }
+  .cat-item:hover { border-color:var(--border); background:var(--bg3); }
+  .cat-item.active { border-color:var(--green); background:rgba(0,232,122,0.05); color:var(--green); }
+  .cat-count { font-family:var(--mono); font-size:10px; background:rgba(255,59,92,0.15); color:var(--red); padding:2px 6px; border-radius:2px; }
+  .cat-count.ok { background:rgba(0,232,122,0.1); color:var(--green); }
+
+  .alert-mini { display:flex; gap:8px; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.04); animation:fadeIn 0.4s ease; }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(-4px)} to{opacity:1;transform:none} }
+  .alert-mini-icon { font-size:14px; flex-shrink:0; margin-top:1px; }
+  .alert-mini-text { font-size:11px; line-height:1.5; color:var(--text); }
+  .alert-mini-time { font-family:var(--mono); font-size:9px; color:var(--text-dim); display:block; margin-top:2px; }
+
+  /* ── CENTER ── */
+  .center { overflow-y:auto; display:flex; flex-direction:column; }
+  .stats-band { display:grid; grid-template-columns:repeat(4,1fr); border-bottom:1px solid var(--border); flex-shrink:0; }
+  .stat-cell { padding:12px 18px; border-right:1px solid var(--border); }
+  .stat-cell:last-child { border-right:none; }
+  .stat-val { font-family:var(--cond); font-size:30px; font-weight:700; line-height:1; }
+  .stat-val.green{color:var(--green)} .stat-val.red{color:var(--red)} .stat-val.amber{color:var(--amber)} .stat-val.cyan{color:var(--cyan)}
+  .stat-label { font-family:var(--mono); font-size:9px; color:var(--text-dim); letter-spacing:2px; margin-top:3px; }
+  .feed-area { padding:14px; flex:1; overflow-y:auto; }
+  .feed-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .feed-title { font-family:var(--mono); font-size:9px; letter-spacing:3px; color:var(--text-dim); }
+  .filter-row { display:flex; gap:5px; }
+  .filter-btn { font-family:var(--mono); font-size:9px; padding:3px 8px; border:1px solid var(--border); background:transparent; color:var(--text-dim); cursor:pointer; }
+  .filter-btn.active { border-color:var(--green); color:var(--green); background:rgba(0,232,122,0.05); }
+
+  /* ── FLASH ── */
+  .flash-alert { background:rgba(255,59,92,0.08); border:1px solid rgba(255,59,92,0.4); padding:10px 14px; display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:10px; color:var(--red); letter-spacing:1px; animation:flashPulse 2s ease infinite; margin-bottom:8px; }
+  @keyframes flashPulse { 0%,100%{background:rgba(255,59,92,0.08)} 50%{background:rgba(255,59,92,0.14)} }
+  .flash-icon { font-size:18px; }
+  .flash-text { flex:1; }
+  .flash-text strong { color:white; display:block; font-size:11px; margin-bottom:2px; }
+
+  /* ── MARKET CARD ── */
+  .market-card { background:var(--bg2); border:1px solid var(--border); border-left:3px solid transparent; padding:13px 15px; margin-bottom:7px; animation:slideIn 0.3s ease; transition:border-color 0.2s; }
+  @keyframes slideIn { from{opacity:0;transform:translateX(-8px)} to{opacity:1;transform:none} }
+  .market-card.critical { border-left-color:var(--red); border-color:rgba(255,59,92,0.25); background:rgba(255,59,92,0.02); }
+  .market-card.high { border-left-color:var(--amber); border-color:rgba(255,184,0,0.15); }
+  .market-card.medium { border-left-color:var(--cyan); }
+  .market-card:hover { border-color:rgba(0,232,122,0.3); }
+  .card-top { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:10px; }
+  .card-title { font-family:var(--cond); font-size:14px; font-weight:600; line-height:1.3; flex:1; }
+  .score-badge { font-family:var(--mono); font-size:17px; font-weight:bold; flex-shrink:0; padding:3px 9px; border:1px solid; }
+  .score-badge.critical{color:var(--red);border-color:var(--red);background:rgba(255,59,92,0.1)}
+  .score-badge.high{color:var(--amber);border-color:var(--amber);background:rgba(255,184,0,0.1)}
+  .score-badge.medium{color:var(--cyan);border-color:var(--cyan);background:rgba(0,207,255,0.1)}
+  .score-badge.low{color:var(--text-dim);border-color:var(--border)}
+
+  .card-meta { display:flex; gap:14px; margin-bottom:10px; flex-wrap:wrap; }
+  .meta-item { display:flex; flex-direction:column; gap:2px; }
+  .meta-val { font-family:var(--cond); font-size:19px; font-weight:700; line-height:1; }
+  .meta-val.up{color:var(--green)} .meta-val.down{color:var(--red)} .meta-val.warn{color:var(--amber)} .meta-val.neutral{color:var(--cyan)}
+  .meta-key { font-family:var(--mono); font-size:8px; color:var(--text-dim); letter-spacing:1px; }
+
+  .prob-section { margin-bottom:9px; }
+  .prob-labels { display:flex; justify-content:space-between; font-family:var(--mono); font-size:9px; color:var(--text-dim); margin-bottom:4px; }
+  .prob-track { height:5px; background:rgba(255,255,255,0.05); }
+  .prob-fill { height:100%; transition:width 1s ease; }
+  .prob-fill.green { background:linear-gradient(90deg,rgba(0,232,122,0.3),var(--green)); box-shadow:0 0 8px rgba(0,232,122,0.4); }
+  .prob-fill.red   { background:linear-gradient(90deg,rgba(255,59,92,0.3),var(--red));   box-shadow:0 0 8px rgba(255,59,92,0.4); }
+  .prob-fill.amber { background:linear-gradient(90deg,rgba(255,184,0,0.3),var(--amber)); box-shadow:0 0 8px rgba(255,184,0,0.4); }
+
+  .signal-tags { display:flex; gap:5px; flex-wrap:wrap; }
+  .tag { font-family:var(--mono); font-size:8px; letter-spacing:1px; padding:2px 6px; border:1px solid rgba(255,255,255,0.08); color:var(--text-dim); }
+  .tag.vol   {border-color:rgba(0,232,122,0.3);color:var(--green-dim)}
+  .tag.price {border-color:rgba(255,184,0,0.3);color:var(--amber-dim)}
+  .tag.whale {border-color:rgba(255,59,92,0.3);color:var(--red-dim)}
+  .tag.smart {border-color:rgba(0,207,255,0.3);color:rgba(0,207,255,0.7)}
+
+  /* Multiple-outcome card */
+  .outcome-row { display:flex; align-items:center; gap:8px; margin-bottom:5px; font-family:var(--mono); font-size:10px; }
+  .outcome-row:last-child { margin-bottom:0; }
+  .outcome-label { flex:0 0 45%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-dim); }
+  .outcome-bar-wrap { flex:1; height:14px; background:rgba(255,255,255,0.05); display:flex; }
+  .outcome-bar { height:100%; transition:width 0.5s ease; min-width:2px; }
+  .outcome-pct { flex:0 0 38px; text-align:right; color:var(--text); }
+  .outcome-delta { flex:0 0 42px; text-align:right; font-weight:600; }
+  .outcome-delta.up { color:var(--green); }
+  .outcome-delta.down { color:var(--red); }
+  .signal-badge { font-family:var(--mono); font-size:8px; letter-spacing:2px; padding:3px 8px; margin-top:8px; border:1px solid; display:inline-block; }
+  .signal-badge.redistribution { border-color:var(--amber); color:var(--amber); background:rgba(255,184,0,0.08); }
+  .signal-badge.concentration { border-color:var(--red); color:var(--red); background:rgba(255,59,92,0.08); }
+  .signal-badge.new_leader { border-color:var(--green); color:var(--green); background:rgba(0,232,122,0.08); }
+
+  /* sparkline */
+  .sparkline-row { display:flex; align-items:center; gap:8px; margin-top:9px; padding-top:9px; border-top:1px solid var(--border); }
+  .sparkline { flex:1; height:28px; }
+  .ts { font-family:var(--mono); font-size:9px; color:var(--text-dim); white-space:nowrap; }
+
+  /* ── SIDEBAR RIGHT ── */
+  .sidebar-right { border-left:1px solid var(--border); padding:16px; overflow-y:auto; display:flex; flex-direction:column; gap:18px; }
+  .whale-item { padding:9px; border:1px solid var(--border); background:var(--bg2); margin-bottom:5px; }
+  .whale-item.big { border-color:rgba(255,59,92,0.25); background:rgba(255,59,92,0.03); }
+  .whale-amount { font-family:var(--cond); font-size:20px; font-weight:700; color:var(--red); line-height:1; }
+  .whale-amount.yes { color:var(--green); }
+  .whale-dir { display:inline-block; font-family:var(--mono); font-size:9px; padding:2px 5px; margin-left:5px; vertical-align:middle; }
+  .whale-dir.yes{background:rgba(0,232,122,0.15);color:var(--green)}
+  .whale-dir.no{background:rgba(255,59,92,0.15);color:var(--red)}
+  .whale-market { font-family:var(--cond); font-size:11px; color:var(--text-dim); margin-top:3px; line-height:1.3; }
+  .whale-meta { display:flex; justify-content:space-between; margin-top:4px; font-family:var(--mono); font-size:8px; color:var(--text-dim); }
+  .wallet-badge { background:rgba(0,207,255,0.1); border:1px solid rgba(0,207,255,0.2); color:var(--cyan); padding:1px 5px; font-family:var(--mono); font-size:8px; }
+
+  /* vol chart */
+  .mini-chart { background:var(--bg3); border:1px solid var(--border); padding:10px; }
+  .mini-chart-title { font-family:var(--mono); font-size:9px; color:var(--text-dim); letter-spacing:2px; margin-bottom:8px; }
+
+  ::-webkit-scrollbar{width:3px} ::-webkit-scrollbar-track{background:var(--bg)} ::-webkit-scrollbar-thumb{background:rgba(0,232,122,0.2)}
+  .empty-state { text-align:center; padding:40px 20px; font-family:var(--mono); font-size:11px; color:var(--text-dim); }
+  #connection-status { transition:all 0.3s; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo">SIGINT<span> // GEOPOLITICAL INTELLIGENCE</span></div>
+  <div class="status-row">
+    <div class="status-pill live" id="connection-status"><div class="dot"></div><span id="conn-label">CONNECTING...</span></div>
+    <div class="status-pill warn" id="alert-pill" style="display:none"><div class="dot"></div><span id="alert-count">0</span> ALERTS</div>
+    <div class="status-pill mock" id="mock-pill" style="display:none">DEMO MODE</div>
+    <div class="clock" id="clock">--:--:-- UTC</div>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- SIDEBAR LEFT -->
+  <div class="sidebar-left">
+    <div>
+      <div class="section-label">// THREAT INDEX</div>
+      <div class="threat-display">
+        <div style="font-family:var(--mono);font-size:9px;color:var(--text-dim);margin-bottom:4px">GLOBAL SCORE</div>
+        <div class="threat-level" id="threat-score">—</div>
+        <div class="threat-sub" id="threat-label">WAITING FOR DATA</div>
+        <div class="threat-bar-wrap"><div class="threat-bar-fill" id="threat-bar" style="width:0%"></div></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">// CATEGORIES</div>
+      <div class="cat-item active" data-filter="all">◈ ALL MARKETS <span class="cat-count" id="cat-total">—</span></div>
+      <div class="cat-item" data-filter="critical">◈ CRITICAL <span class="cat-count" id="cat-critical">—</span></div>
+      <div class="cat-item" data-filter="high">◈ HIGH <span class="cat-count" id="cat-high">—</span></div>
+      <div class="cat-item" data-filter="medium">◈ MEDIUM <span class="cat-count" id="cat-medium">—</span></div>
+      <div class="cat-item" data-filter="whale">◈ WHALE TRADES <span class="cat-count" id="cat-whale">—</span></div>
+    </div>
+
+    <div>
+      <div class="section-label">// RECENT ACTIVITY</div>
+      <div id="activity-feed">
+        <div class="empty-state">Waiting for data...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CENTER -->
+  <div class="center">
+    <div class="stats-band">
+      <div class="stat-cell"><div class="stat-val red" id="stat-critical">—</div><div class="stat-label">CRITICAL ALERTS</div></div>
+      <div class="stat-cell"><div class="stat-val amber" id="stat-vol">—</div><div class="stat-label">VOLUME 1H (GEO)</div></div>
+      <div class="stat-cell"><div class="stat-val red" id="stat-spike">—</div><div class="stat-label">AVG VOL SPIKE</div></div>
+      <div class="stat-cell"><div class="stat-val cyan" id="stat-markets">—</div><div class="stat-label">MARKETS TRACKED</div></div>
+    </div>
+    <div class="feed-area">
+      <div class="feed-header">
+        <div class="feed-title">// GEOPOLITICAL MARKETS — LIVE</div>
+        <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-end">
+          <div class="filter-row">
+            <button class="filter-btn active" data-sort="prob">PROB</button>
+            <button class="filter-btn" data-sort="score">SCORE</button>
+            <button class="filter-btn" data-sort="spike">SPIKE</button>
+            <button class="filter-btn" data-sort="price">MOVE</button>
+          </div>
+          <div class="filter-row">
+            <button class="filter-btn active" data-view="markets" id="view-markets-btn">MARKETS</button>
+            <button class="filter-btn" data-view="clusters" id="view-clusters-btn">CLUSTERS</button>
+          </div>
+        </div>
+      </div>
+      <div id="flash-area"></div>
+      <div id="markets-feed">
+        <div class="empty-state">⟳ Connecting to server...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SIDEBAR RIGHT -->
+  <div class="sidebar-right">
+    <div>
+      <div class="section-label">// WHALE TRADES — LIVE</div>
+      <div id="whale-feed"><div class="empty-state" style="padding:20px 0">Waiting...</div></div>
+    </div>
+
+    <div>
+      <div class="section-label">// VOLUME GEO — HISTORY</div>
+      <div class="mini-chart">
+        <div class="mini-chart-title">VOLUME 24H PER POLL</div>
+        <svg id="vol-chart" viewBox="0 0 260 60" style="width:100%" preserveAspectRatio="none">
+          <text x="120" y="35" fill="rgba(150,180,165,0.3)" font-size="9" font-family="'Share Tech Mono'" text-anchor="middle">WAITING</text>
+        </svg>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">// LATEST ALERTS</div>
+      <div id="alerts-sidebar"><div class="empty-state" style="padding:20px 0">No alerts</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── ÉTAT LOCAL ──────────────────────────────────────────────
+let appState = { markets:[], alerts:[], trades:[], stats:{}, clusters:[] };
+let activeFilter = "all";
+let activeSort   = "prob";
+let activeView   = "markets"; // "markets" | "clusters"
+let activeClusterEventIds = null;
+let volHistory   = [];
+
+// ── SSE ─────────────────────────────────────────────────────
+function connect() {
+  const es = new EventSource("/events");
+
+  es.addEventListener("state", e => {
+    appState = JSON.parse(e.data);
+    render();
+  });
+
+  es.addEventListener("alert", e => {
+    const alert = JSON.parse(e.data);
+    appState.alerts.unshift(alert);
+    render();
+    flashNotification(alert);
+  });
+
+  es.onopen = () => {
+    document.getElementById("conn-label").textContent = "LIVE";
+    document.getElementById("connection-status").className = "status-pill live";
+  };
+
+  es.onerror = () => {
+    document.getElementById("conn-label").textContent = "RECONNEXION...";
+    document.getElementById("connection-status").className = "status-pill mock";
+    setTimeout(connect, 3000);
+    es.close();
+  };
+}
+
+// ── HELPERS ─────────────────────────────────────────────────
+function fmt$(n) {
+  if (!n) return "$0";
+  if (n >= 1_000_000) return `$${(n/1e6).toFixed(1)}M`;
+  if (n >= 1_000)     return `$${Math.round(n/1000)}K`;
+  return `$${n}`;
+}
+
+function fmtPct(n) { return `${n > 0 ? "+" : ""}${n}%`; }
+
+function timeAgo(iso) {
+  const diff = (Date.now() - new Date(iso)) / 1000;
+  if (diff < 60)   return `${Math.round(diff)}s ago`;
+  if (diff < 3600) return `${Math.round(diff/60)} min ago`;
+  return `${Math.round(diff/3600)}h ago`;
+}
+
+function levelClass(score) {
+  if (score >= 80) return "critical";
+  if (score >= 60) return "high";
+  if (score >= 40) return "medium";
+  return "low";
+}
+
+function levelEmoji(level) {
+  if (level === "critical") return "🔴";
+  if (level === "high")     return "🟡";
+  if (level === "medium")   return "🔵";
+  return "⚪";
+}
+
+function sparklinePath(history) {
+  if (!history || history.length < 2) return "";
+  const probs = history.map(h => h.probability || 0);
+  const min = Math.min(...probs), max = Math.max(...probs);
+  const range = max - min || 0.01;
+  const W = 200, H = 28;
+  const pts = probs.map((p, i) => {
+    const x = (i / (probs.length - 1)) * W;
+    const y = H - ((p - min) / range) * (H - 4) - 2;
+    return `${x},${y}`;
+  });
+  return pts.join(" ");
+}
+
+function probFillClass(prob, priceMove, isBadOutcome) {
+  if (prob >= 100) return "red";
+  if (priceMove > 20) return "red";
+  if (priceMove > 10) return "amber";
+  if (isBadOutcome) {
+    if (prob >= 60) return "red";
+    if (prob >= 40) return "amber";
+  }
+  return "green";
+}
+
+// ── RENDER ──────────────────────────────────────────────────
+function render() {
+  const { markets, alerts, trades, stats, clusters } = appState;
+
+  // Stats band
+  document.getElementById("stat-critical").textContent = stats.criticalCount || 0;
+  document.getElementById("stat-vol").textContent = fmt$(stats.totalVol1h);
+  document.getElementById("stat-spike").textContent = `×${stats.avgSpike || "—"}`;
+  document.getElementById("stat-markets").textContent = markets.length;
+
+  // Threat
+  const threat = stats.threatScore || 0;
+  const threatEl = document.getElementById("threat-score");
+  threatEl.textContent = threat;
+  threatEl.className = "threat-level " + (threat >= 70 ? "" : threat >= 40 ? "amber" : "green");
+  document.getElementById("threat-label").textContent =
+    threat >= 80 ? "CRITICAL — MAX ALERT" :
+    threat >= 60 ? "HIGH — MONITOR CLOSELY" :
+    threat >= 40 ? "MODERATE — ABNORMAL ACTIVITY" : "NORMAL";
+  document.getElementById("threat-bar").style.width = threat + "%";
+
+  // Alert pill
+  const critCount = alerts.filter(a => a.level === "critical").length;
+  if (critCount > 0) {
+    document.getElementById("alert-pill").style.display = "flex";
+    document.getElementById("alert-count").textContent = critCount;
+  }
+
+  // Mock pill
+  document.getElementById("mock-pill").style.display = stats.useMock ? "flex" : "none";
+
+  // Cat counts
+  document.getElementById("cat-total").textContent    = markets.length;
+  document.getElementById("cat-critical").textContent = markets.filter(m => m.score >= 80).length;
+  document.getElementById("cat-high").textContent     = markets.filter(m => m.score >= 60 && m.score < 80).length;
+  document.getElementById("cat-medium").textContent   = markets.filter(m => m.score >= 40 && m.score < 60).length;
+  document.getElementById("cat-whale").textContent    = markets.filter(m => m.maxSingleTrade >= 10000).length;
+
+  // Activity feed (left sidebar)
+  const actEl = document.getElementById("activity-feed");
+  const recentAlerts = alerts.slice(0, 6);
+  if (recentAlerts.length === 0) {
+    actEl.innerHTML = '<div class="empty-state">No activity</div>';
+  } else {
+    actEl.innerHTML = recentAlerts.map(a => `
+      <div class="alert-mini">
+        <div class="alert-mini-icon">${levelEmoji(a.level)}</div>
+        <div class="alert-mini-text">
+          ${a.title?.length > 55 ? a.title.slice(0,55)+"…" : a.title}
+          <span class="alert-mini-time">${timeAgo(a.timestamp)}</span>
+        </div>
+      </div>`).join("");
+  }
+
+  // Flash alert (top critical)
+  const topCritical = alerts.find(a => a.level === "critical");
+  const flashArea = document.getElementById("flash-area");
+  if (topCritical) {
+    flashArea.innerHTML = `
+      <div class="flash-alert">
+        <div class="flash-icon">⚡</div>
+        <div class="flash-text">
+          <strong>CRITICAL ALERT — SCORE ${topCritical.score}/100</strong>
+          ${topCritical.title}
+        </div>
+        <div style="font-family:var(--mono);font-size:9px">${timeAgo(topCritical.timestamp)}</div>
+      </div>`;
+  } else {
+    flashArea.innerHTML = "";
+  }
+
+  // Filter markets
+  let filtered = [...markets];
+  if (activeFilter === "critical") filtered = filtered.filter(m => m.score >= 80);
+  else if (activeFilter === "high")  filtered = filtered.filter(m => m.score >= 60);
+  else if (activeFilter === "medium") filtered = filtered.filter(m => m.score >= 40 && m.score < 60);
+  else if (activeFilter === "whale") filtered = filtered.filter(m => m.maxSingleTrade >= 10000);
+
+  // Sort
+  if (activeSort === "score") filtered.sort((a,b) => b.score - a.score);
+  else if (activeSort === "spike") filtered.sort((a,b) => (b.volumeSpike||0) - (a.volumeSpike||0));
+  else if (activeSort === "price") filtered.sort((a,b) => (b.priceMove1h||0) - (a.priceMove1h||0));
+  else filtered.sort((a,b) => (b.probability||0) - (a.probability||0));
+
+  const feedEl = document.getElementById("markets-feed");
+  if (activeView === "clusters") {
+    if (!clusters || clusters.length === 0) {
+      feedEl.innerHTML = '<div class="empty-state">No clusters yet</div>';
+    } else {
+      let clusterList = [...clusters];
+      if (activeFilter === "critical") clusterList = clusterList.filter(c => c.events?.some(e => e.score >= 80));
+      else if (activeFilter === "high") clusterList = clusterList.filter(c => c.events?.some(e => e.score >= 60));
+      else if (activeFilter === "medium") clusterList = clusterList.filter(c => c.events?.some(e => e.score >= 40 && e.score < 60));
+      else if (activeFilter === "whale") clusterList = clusterList.filter(c => c.events?.some(e => (e.maxSingleTrade || 0) >= 10000));
+      if (activeSort === "score") clusterList.sort((a,b) => (b.clusterScore||0) - (a.clusterScore||0));
+      else if (activeSort === "spike") clusterList.sort((a,b) => (b.hotCount||0) - (a.hotCount||0));
+      else if (activeSort === "price") clusterList.sort((a,b) => (b.eventCount||0) - (a.eventCount||0));
+      else clusterList.sort((a,b) => (b.avgProbability||0) - (a.avgProbability||0));
+      feedEl.innerHTML = clusterList.map(c => renderClusterCard(c)).join("");
+    }
+  } else {
+    let base = [...markets];
+    if (activeClusterEventIds) {
+      base = base.filter(m => activeClusterEventIds.has(String(m.id)));
+    }
+    if (activeFilter === "critical") base = base.filter(m => m.score >= 80);
+    else if (activeFilter === "high")  base = base.filter(m => m.score >= 60);
+    else if (activeFilter === "medium") base = base.filter(m => m.score >= 40 && m.score < 60);
+    else if (activeFilter === "whale") base = base.filter(m => m.maxSingleTrade >= 10000);
+
+    if (activeSort === "score") base.sort((a,b) => b.score - a.score);
+    else if (activeSort === "spike") base.sort((a,b) => (b.volumeSpike||0) - (a.volumeSpike||0));
+    else if (activeSort === "price") base.sort((a,b) => (b.priceMove1h||0) - (a.priceMove1h||0));
+    else base.sort((a,b) => (b.probability||0) - (a.probability||0));
+
+    if (base.length === 0) {
+      feedEl.innerHTML = '<div class="empty-state">No matching markets</div>';
+    } else {
+      feedEl.innerHTML = base.slice(0, 150).map(m => renderCard(m)).join("");
+    }
+  }
+
+  // Whale feed
+  renderWhales(trades);
+
+  // Alerts sidebar
+  renderAlertsSidebar(alerts);
+
+  // Vol chart
+  const totalVol = markets.reduce((s, m) => s + (m.volume24h || 0), 0);
+  volHistory.push(totalVol);
+  if (volHistory.length > 20) volHistory.shift();
+  renderVolChart();
+}
+
+function renderCard(m) {
+  const lvl = levelClass(m.score);
+  const isMultiple = m.type === "multiple";
+
+  if (isMultiple) {
+    const leadLabel = m.leadOutcome?.question || m.title;
+    const prob      = Math.round((m.leadOutcome?.probability || 0) * 100);
+    const spike     = m.volumeSpike || 1;
+    const move      = m.priceMove1h || 0;
+    const whale     = m.maxSingleTrade || 0;
+    const fillCls   = probFillClass(prob, move, m.isBadOutcome);
+    const pts       = sparklinePath(m.history || []);
+    const signalLabel = m.signal === "redistribution" ? "🔄 REDISTRIBUTION" : m.signal === "concentration" ? "🎯 CONCENTRATION" : m.signal === "new_leader" ? "🚀 NEW LEADER" : "";
+
+    const tags = [];
+    if (spike >= 3) tags.push(`<span class="tag vol">⚡ VOL ×${spike}</span>`);
+    if (move  >= 8) tags.push(`<span class="tag price">📈 +${move}%</span>`);
+    if (whale >= 10000) tags.push(`<span class="tag whale">🐋 ${fmt$(whale)}</span>`);
+    if (m.hasSmartWallet) tags.push(`<span class="tag smart">🎯 SMART WALLET</span>`);
+
+    return `
+    <div class="market-card ${lvl}">
+      <div class="card-top">
+        <div class="card-title">${leadLabel}</div>
+        <div class="score-badge ${lvl}">${m.score}</div>
+      </div>
+      <div class="card-meta">
+        <div class="meta-item">
+          <div class="meta-val ${prob >= 100 ? 'down' : prob > 60 ? 'up' : prob > 40 ? 'warn' : 'neutral'}">${prob}%</div>
+          <div class="meta-key">PROB</div>
+        </div>
+        ${move ? `<div class="meta-item"><div class="meta-val warn">${fmtPct(move)}</div><div class="meta-key">MOVE 1H</div></div>` : ""}
+        ${spike > 1.5 ? `<div class="meta-item"><div class="meta-val warn">${spike}×</div><div class="meta-key">VOL SPIKE</div></div>` : ""}
+        ${whale ? `<div class="meta-item"><div class="meta-val down">${fmt$(whale)}</div><div class="meta-key">WHALE</div></div>` : ""}
+      </div>
+      <div class="prob-section">
+        <div class="prob-labels"><span>CURRENT PROBABILITY</span><span style="color:var(--${fillCls === 'red' ? 'red' : fillCls === 'amber' ? 'amber' : 'green'})">${prob}%</span></div>
+        <div class="prob-track"><div class="prob-fill ${fillCls}" style="width:${prob}%"></div></div>
+      </div>
+      ${signalLabel ? `<div class="signal-badge ${m.signal}">${signalLabel}</div>` : ""}
+      ${tags.length ? `<div class="signal-tags">${tags.join("")}</div>` : ""}
+      ${pts ? `
+      <div class="sparkline-row">
+        <svg class="sparkline" viewBox="0 0 200 28" preserveAspectRatio="none">
+          <polyline points="${pts}" fill="none" stroke="${lvl === 'critical' ? 'var(--red)' : lvl === 'high' ? 'var(--amber)' : 'var(--green)'}" stroke-width="1.5" style="filter:drop-shadow(0 0 3px currentColor)"/>
+        </svg>
+        <div class="ts">UPD: ${new Date().toLocaleTimeString("en", {hour:"2-digit",minute:"2-digit",timeZone:"UTC"})} UTC</div>
+      </div>` : ""}
+    </div>`;
+  }
+
+  const prob    = Math.round((m.probability || 0) * 100);
+  const spike   = m.volumeSpike || 1;
+  const move    = m.priceMove1h || 0;
+  const whale   = m.maxSingleTrade || 0;
+  const fillCls = probFillClass(prob, move, m.isBadOutcome);
+  const pts     = sparklinePath(m.history || []);
+
+  const tags = [];
+  if (spike >= 3) tags.push(`<span class="tag vol">⚡ VOL ×${spike}</span>`);
+  if (move  >= 8) tags.push(`<span class="tag price">📈 +${move}%</span>`);
+  if (whale >= 10000) tags.push(`<span class="tag whale">🐋 ${fmt$(whale)}</span>`);
+  if (m.hasSmartWallet) tags.push(`<span class="tag smart">🎯 SMART WALLET</span>`);
+
+  return `
+    <div class="market-card ${lvl}">
+      <div class="card-top">
+        <div class="card-title">${m.title}</div>
+        <div class="score-badge ${lvl}">${m.score}</div>
+      </div>
+      <div class="card-meta">
+        <div class="meta-item">
+          <div class="meta-val ${prob >= 100 ? 'down' : prob > 60 ? 'up' : prob > 40 ? 'warn' : 'neutral'}">${prob}%</div>
+          <div class="meta-key">PROB</div>
+        </div>
+        ${move ? `<div class="meta-item"><div class="meta-val warn">${fmtPct(move)}</div><div class="meta-key">MOVE 1H</div></div>` : ""}
+        ${spike > 1.5 ? `<div class="meta-item"><div class="meta-val warn">${spike}×</div><div class="meta-key">VOL SPIKE</div></div>` : ""}
+        ${whale ? `<div class="meta-item"><div class="meta-val down">${fmt$(whale)}</div><div class="meta-key">WHALE</div></div>` : ""}
+      </div>
+      <div class="prob-section">
+        <div class="prob-labels"><span>CURRENT PROBABILITY</span><span style="color:var(--${fillCls === 'red' ? 'red' : fillCls === 'amber' ? 'amber' : 'green'})">${prob}%</span></div>
+        <div class="prob-track"><div class="prob-fill ${fillCls}" style="width:${prob}%"></div></div>
+      </div>
+      ${tags.length ? `<div class="signal-tags">${tags.join("")}</div>` : ""}
+      ${pts ? `
+      <div class="sparkline-row">
+        <svg class="sparkline" viewBox="0 0 200 28" preserveAspectRatio="none">
+          <polyline points="${pts}" fill="none" stroke="${lvl === 'critical' ? 'var(--red)' : lvl === 'high' ? 'var(--amber)' : 'var(--green)'}" stroke-width="1.5" style="filter:drop-shadow(0 0 3px currentColor)"/>
+        </svg>
+        <div class="ts">UPD: ${new Date().toLocaleTimeString("en", {hour:"2-digit",minute:"2-digit",timeZone:"UTC"})} UTC</div>
+      </div>` : ""}
+    </div>`;
+}
+
+function renderClusterCard(c) {
+  const evt = c.topEvent || (c.events && c.events[0]) || null;
+  if (!evt) return "";
+  const prob = Math.round((evt.probability || 0) * 100);
+  const lvl  = levelClass(c.clusterScore || 0);
+  const fillCls = probFillClass(prob, evt.priceMove1h || 0, evt.isBadOutcome);
+  const title = (evt.title || "").slice(0, 120) + ((evt.title || "").length > 120 ? "…" : "");
+
+  return `
+    <div class="market-card ${lvl}" onclick="applyClusterFilter('${c.name.replace(/'/g, "\\'")}')">
+      <div class="card-top">
+        <div class="card-title">${c.name}</div>
+        <div class="score-badge ${lvl}">${c.clusterScore || 0}</div>
+      </div>
+      <div class="card-meta">
+        <div class="meta-item">
+          <div class="meta-val neutral">${c.eventCount}</div>
+          <div class="meta-key">EVENTS</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-val neutral">${c.hotCount}</div>
+          <div class="meta-key">> 50%</div>
+        </div>
+      </div>
+      <div style="font-family:var(--cond);font-size:12px;color:var(--text-dim);margin-bottom:6px;">${title}</div>
+      <div class="prob-section">
+        <div class="prob-labels"><span>CURRENT PROBABILITY</span><span style="color:var(--${fillCls === 'red' ? 'red' : fillCls === 'amber' ? 'amber' : 'green'})">${prob}%</span></div>
+        <div class="prob-track"><div class="prob-fill ${fillCls}" style="width:${prob}%"></div></div>
+      </div>
+    </div>`;
+}
+
+function renderWhales(trades) {
+  const el = document.getElementById("whale-feed");
+  if (!trades || trades.length === 0) {
+    el.innerHTML = '<div class="empty-state" style="padding:20px 0">No recent whale trades</div>';
+    return;
+  }
+  el.innerHTML = trades.slice(0, 6).map(t => `
+    <div class="whale-item ${t.amount >= 30000 ? 'big' : ''}">
+      <div>
+        <span class="whale-amount ${t.side === 'YES' ? 'yes' : ''}">${fmt$(t.amount)}</span>
+        <span class="whale-dir ${t.side === 'YES' ? 'yes' : 'no'}">${t.side || "?"}</span>
+      </div>
+      <div class="whale-market">${t.marketTitle?.length > 50 ? t.marketTitle.slice(0,50)+"…" : t.marketTitle}</div>
+      <div class="whale-meta">
+        ${t.isSmartWallet ? '<span class="wallet-badge">⭐ SMART WALLET</span>' : `<span style="font-family:var(--mono);font-size:8px">${t.wallet || "0x???"}</span>`}
+        <span>${timeAgo(t.timestamp)}</span>
+      </div>
+    </div>`).join("");
+}
+
+function renderAlertsSidebar(alerts) {
+  const el = document.getElementById("alerts-sidebar");
+  if (!alerts || alerts.length === 0) {
+    el.innerHTML = '<div class="empty-state" style="padding:20px 0">No alerts</div>';
+    return;
+  }
+  el.innerHTML = alerts.slice(0, 5).map(a => `
+    <div class="whale-item" style="border-left:2px solid ${a.level === 'critical' ? 'var(--red)' : a.level === 'high' ? 'var(--amber)' : 'var(--cyan)'}; margin-bottom:6px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+        <span style="font-family:var(--mono);font-size:16px;color:${a.level === 'critical' ? 'var(--red)' : a.level === 'high' ? 'var(--amber)' : 'var(--cyan)'}; font-weight:bold">${a.score}</span>
+        <span style="font-family:var(--mono);font-size:8px;color:var(--text-dim)">${timeAgo(a.timestamp)}</span>
+      </div>
+      <div style="font-family:var(--cond);font-size:11px;color:var(--text-dim);line-height:1.3">${a.title?.slice(0,60)}…</div>
+      <div style="margin-top:4px;display:flex;gap:6px;font-family:var(--mono);font-size:8px;color:var(--text-dim)">
+        ${a.volumeSpike ? `<span>×${a.volumeSpike} vol</span>` : ""}
+        ${a.priceMove ? `<span>+${a.priceMove}%</span>` : ""}
+        ${a.whaleTrade ? `<span>${fmt$(a.whaleTrade)}</span>` : ""}
+      </div>
+    </div>`).join("");
+}
+
+function renderVolChart() {
+  const svg = document.getElementById("vol-chart");
+  if (volHistory.length < 2) return;
+  const max = Math.max(...volHistory) || 1;
+  const W = 260, H = 52, padX = 4;
+  const barW = Math.max(6, (W - padX*2) / volHistory.length - 2);
+  const bars = volHistory.map((v, i) => {
+    const x = padX + i * ((W - padX*2) / volHistory.length);
+    const h = Math.max(2, (v / max) * H);
+    const y = H - h;
+    const intense = v / max;
+    const color = intense > 0.7 ? "var(--red)" : intense > 0.4 ? "rgba(255,184,0,0.6)" : "rgba(0,232,122,0.4)";
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${color}" style="filter:drop-shadow(0 0 3px ${color})"/>`;
+  }).join("");
+  svg.innerHTML = bars +
+    `<text x="4" y="58" fill="rgba(150,180,165,0.4)" font-size="7" font-family="'Share Tech Mono'">-${volHistory.length}m</text>` +
+    `<text x="218" y="58" fill="rgba(150,180,165,0.4)" font-size="7" font-family="'Share Tech Mono'">NOW</text>`;
+}
+
+function flashNotification(alert) {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "granted") {
+    new Notification(`🚨 SIGINT — Score ${alert.score}`, { body: alert.title, tag: alert.id });
+  } else if (Notification.permission !== "denied") {
+    Notification.requestPermission();
+  }
+}
+
+// ── EVENTS ──────────────────────────────────────────────────
+document.querySelectorAll(".cat-item").forEach(el => {
+  el.addEventListener("click", () => {
+    document.querySelectorAll(".cat-item").forEach(e => e.classList.remove("active"));
+    el.classList.add("active");
+    activeFilter = el.dataset.filter;
+    render();
+  });
+});
+
+document.getElementById("view-markets-btn").addEventListener("click", () => {
+  activeView = "markets";
+  activeClusterEventIds = null;
+  document.getElementById("view-markets-btn").classList.add("active");
+  document.getElementById("view-clusters-btn").classList.remove("active");
+  render();
+});
+
+document.getElementById("view-clusters-btn").addEventListener("click", () => {
+  activeView = "clusters";
+  activeClusterEventIds = null;
+  document.getElementById("view-clusters-btn").classList.add("active");
+  document.getElementById("view-markets-btn").classList.remove("active");
+  render();
+});
+
+function applyClusterFilter(name) {
+  const cluster = (appState.clusters || []).find(c => c.name === name);
+  if (!cluster) return;
+  activeView = "markets";
+  activeClusterEventIds = new Set((cluster.events || []).map(e => String(e.id)));
+  document.getElementById("view-markets-btn").classList.add("active");
+  document.getElementById("view-clusters-btn").classList.remove("active");
+  render();
+}
+
+document.querySelectorAll(".filter-btn").forEach(el => {
+  el.addEventListener("click", () => {
+    document.querySelectorAll(".filter-btn").forEach(e => e.classList.remove("active"));
+    el.classList.add("active");
+    activeSort = el.dataset.sort;
+    render();
+  });
+});
+
+// ── CLOCK ───────────────────────────────────────────────────
+setInterval(() => {
+  const n = new Date();
+  document.getElementById("clock").textContent =
+    `${String(n.getUTCHours()).padStart(2,"0")}:${String(n.getUTCMinutes()).padStart(2,"0")}:${String(n.getUTCSeconds()).padStart(2,"0")} UTC`;
+}, 1000);
+
+// ── START ────────────────────────────────────────────────────
+connect();
+</script>
+</body>
+</html>

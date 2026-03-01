@@ -1,0 +1,3 @@
+.opencodeignore
+.env
+node_modules/
