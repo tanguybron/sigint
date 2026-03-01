@@ -523,7 +523,7 @@ function findTopMover(probsNow, probs1hAgo) {
 
 async function fetchGeoEvents() {
   const allEvents = [];
-  const maxPages = process.env.VERCEL ? 1 : EVENTS_MAX_PAGES;
+  const maxPages = process.env.VERCEL ? 4 : EVENTS_MAX_PAGES;
   for (let offset = 0; offset < maxPages * EVENTS_LIMIT; offset += EVENTS_LIMIT) {
     const url = `${GAMMA_URL}/events?active=true&closed=false&limit=${EVENTS_LIMIT}&offset=${offset}&order=volume24hr&ascending=false`;
     const res = await fetch(url, { timeout: process.env.VERCEL ? 8_000 : 10_000 });
