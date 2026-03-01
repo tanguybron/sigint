@@ -142,7 +142,21 @@ function sendToClient(client, event, data) {
 // ─────────────────────────────────────────────
 // REST API
 // ─────────────────────────────────────────────
-app.get("/api/state",  (_, res) => res.json(buildClientState()));
+const CACHE_STALE_MS = 55_000;
+
+app.get("/api/state", async (_, res) => {
+  if (process.env.VERCEL) {
+    const stale = !state.lastPoll || (Date.now() - new Date(state.lastPoll).getTime() > CACHE_STALE_MS);
+    if (stale || Object.keys(state.markets).length === 0) {
+      try {
+        await poll();
+      } catch (err) {
+        console.warn("  ⚠ Poll failed:", err.message);
+      }
+    }
+  }
+  res.json(buildClientState());
+});
 app.get("/api/alerts", (_, res) => res.json(state.alerts.slice(0, 50)));
 app.get("/api/trades", (_, res) => res.json(state.trades.slice(0, 30)));
 app.get("/api/clusters", (_, res) => res.json(state.clusters || []));
@@ -1033,10 +1047,14 @@ function injectMockData() {
 }
 
 // ─────────────────────────────────────────────
-// DÉMARRAGE
+// DÉMARRAGE (skip on Vercel serverless)
 // ─────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`\n🚀 SIGINT Dashboard → http://localhost:${PORT}\n`);
-  poll();
-  setInterval(poll, POLL_INTERVAL_MS);
-});
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`\n🚀 SIGINT Dashboard → http://localhost:${PORT}\n`);
+    poll();
+    setInterval(poll, POLL_INTERVAL_MS);
+  });
+}
+
+module.exports = app;

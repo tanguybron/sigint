@@ -271,11 +271,17 @@ let activeView   = "markets"; // "markets" | "clusters"
 let activeClusterEventIds = null;
 let volHistory   = [];
 
-// ── SSE ─────────────────────────────────────────────────────
+// ── SSE / POLLING (fallback for Vercel serverless) ────────────
+let usePolling = false;
+let sseErrorCount = 0;
+
 function connect() {
+  if (usePolling) return startPolling();
+
   const es = new EventSource("/events");
 
   es.addEventListener("state", e => {
+    sseErrorCount = 0;
     appState = JSON.parse(e.data);
     render();
   });
@@ -288,16 +294,37 @@ function connect() {
   });
 
   es.onopen = () => {
+    sseErrorCount = 0;
     document.getElementById("conn-label").textContent = "LIVE";
     document.getElementById("connection-status").className = "status-pill live";
   };
 
   es.onerror = () => {
-    document.getElementById("conn-label").textContent = "RECONNEXION...";
-    document.getElementById("connection-status").className = "status-pill mock";
-    setTimeout(connect, 3000);
     es.close();
+    sseErrorCount++;
+    if (sseErrorCount >= 2) {
+      usePolling = true;
+      startPolling();
+    } else {
+      document.getElementById("conn-label").textContent = "RECONNEXION...";
+      document.getElementById("connection-status").className = "status-pill mock";
+      setTimeout(connect, 3000);
+    }
   };
+}
+
+function startPolling() {
+  document.getElementById("conn-label").textContent = "LIVE";
+  document.getElementById("connection-status").className = "status-pill live";
+  const poll = async () => {
+    try {
+      const r = await fetch("/api/state");
+      appState = await r.json();
+      render();
+    } catch (_) {}
+  };
+  poll();
+  setInterval(poll, 60000);
 }
 
 // ── HELPERS ─────────────────────────────────────────────────

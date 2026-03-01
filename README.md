@@ -83,7 +83,20 @@ Le score global (0–100) mesure la « tension » géopolitique collective des m
 ```
 server.js          ← Backend : poller + scoring + SSE
 public/index.html  ← Frontend : dashboard temps réel
+api/index.js       ← Vercel serverless handler
+vercel.json        ← Vercel config
 ```
+
+## Déploiement Vercel
+
+```bash
+vercel
+```
+
+1. Configure les variables d'environnement dans le dashboard Vercel : `OPENROUTER_API_KEY`, `WEBHOOK_URL`
+2. Sur Vercel, SSE n'est pas supporté (timeout 60s) — le frontend bascule automatiquement en polling toutes les 60s
+3. Le premier chargement peut prendre 30–60s (poll Polymarket + clustering IA)
+4. Plan Pro recommandé pour `maxDuration: 60` (Hobby = 10s max)
 
 ## Prochaines étapes (V2)
 
