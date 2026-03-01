@@ -5,7 +5,14 @@ const path = require("path");
 
 const app = express();
 const PORT = 3000;
-app.use(express.static("public"));
+
+// Serve static files (index.html, etc.)
+const publicDir = path.join(__dirname, "public");
+app.use(express.static(publicDir));
+
+// Explicit root + favicon to avoid 404s
+app.get("/", (_, res) => res.sendFile(path.join(publicDir, "index.html")));
+app.get("/favicon.ico", (_, res) => res.status(204).end());
 
 // ─────────────────────────────────────────────
 // CONFIG
