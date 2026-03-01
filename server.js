@@ -150,16 +150,25 @@ function sendToClient(client, event, data) {
 // REST API
 // ─────────────────────────────────────────────
 const CACHE_STALE_MS = 55_000;
+let pollInProgress = null;
 
 app.get("/api/state", async (_, res) => {
   if (process.env.VERCEL) {
     const stale = !state.lastPoll || (Date.now() - new Date(state.lastPoll).getTime() > CACHE_STALE_MS);
-    if (stale || Object.keys(state.markets).length === 0) {
+    const empty = Object.keys(state.markets).length === 0;
+    if (empty || stale) {
+      if (!pollInProgress) {
+        pollInProgress = poll().finally(() => { pollInProgress = null; });
+      }
       try {
-        await poll();
+        await Promise.race([pollInProgress, new Promise(r => setTimeout(r, 55000))]);
       } catch (err) {
         console.warn("  ⚠ Poll failed:", err.message);
       }
+    }
+    if (Object.keys(state.markets).length === 0) {
+      state.useMock = true;
+      injectMockData();
     }
   }
   res.json(buildClientState());
