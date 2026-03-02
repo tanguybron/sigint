@@ -1010,6 +1010,12 @@ function renderGraph() {
     });
   }
 
+  // Give nodes a dispersed initial position to avoid overlap
+  nodes.forEach((n, i) => {
+    n.x = width / 2 + (Math.random() - 0.5) * (width * 0.6);
+    n.y = height / 2 + (Math.random() - 0.5) * (height * 0.6);
+  });
+
   const simulation = d3.forceSimulation(nodes)
     .force("link", d3.forceLink(links).id(d => d.id)
       .distance(d => {
@@ -1027,7 +1033,7 @@ function renderGraph() {
     .force("charge", d3.forceManyBody().strength(d => -100 - (d.activity || 0) * 200))
     .force("center", d3.forceCenter(width / 2, height / 2))
     .force("collision", d3.forceCollide().radius(d => d.size + 20))
-    .force("bloc_separation", { force: blocSeparationForce });
+    .force("bloc_separation", blocSeparationForce);
 
   simulation.on("tick", () => {
     link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
