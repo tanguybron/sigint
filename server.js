@@ -120,6 +120,7 @@ const state = {
   lastClusterIds: "",
   clusters: [],
   clusterRelationships: [],
+  countries: [],
   signalLog: [],
   seenSignals: new Set(),
 };
@@ -155,6 +156,13 @@ async function loadStateFromDB() {
       .eq("key", "cluster_relationships")
       .single();
     state.clusterRelationships = JSON.parse(relationships?.value || "[]");
+
+    const { data: countries } = await supabase
+      .from("poll_state")
+      .select("value")
+      .eq("key", "countries")
+      .single();
+    state.countries = JSON.parse(countries?.value || "[]");
 
     const { data: clusters } = await supabase
       .from("clusters")
@@ -232,6 +240,17 @@ async function saveStateToDB() {
         {
           key: "cluster_relationships",
           value: JSON.stringify(state.clusterRelationships || []),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "key" }
+      );
+
+    await supabase
+      .from("poll_state")
+      .upsert(
+        {
+          key: "countries",
+          value: JSON.stringify(state.countries || []),
           updated_at: new Date().toISOString(),
         },
         { onConflict: "key" }
@@ -357,6 +376,7 @@ function buildClientState() {
     trades:       state.trades.slice(0, 20),
     clusters:     state.clusters || [],
     clusterRelationships: state.clusterRelationships || [],
+    countries:     state.countries || [],
     stats: {
       criticalCount,
       totalVol1h:   Math.round(totalVol1h),
@@ -974,11 +994,12 @@ async function poll() {
     if (currentIds !== state.lastClusterIds) {
       console.log("  → Liste d'events modifiée, recalcul des clusters IA...");
       if (process.env.OPENROUTER_API_KEY) {
-        const { clusters, relationships } = await computeClustersWithAI(eventsArray);
+        const { clusters, relationships, countries } = await computeClustersWithAI(eventsArray);
         state.clusters = clusters;
         state.clusterRelationships = relationships || [];
+        state.countries = countries || [];
         state.lastClusterIds = currentIds;
-        console.log(`  → ${state.clusters.length} clusters, ${state.clusterRelationships.length} relationships`);
+        console.log(`  → ${state.clusters.length} clusters, ${state.clusterRelationships.length} rels, ${state.countries.length} countries`);
       } else {
         console.warn("  ⚠ OPENROUTER_API_KEY manquant, clustering IA désactivé");
       }

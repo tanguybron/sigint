@@ -181,8 +181,10 @@
   #graph-container { flex:1; position:relative; min-height:0; display:flex; flex-direction:column; }
   .graph-node-cluster { filter: drop-shadow(0 0 8px currentColor); }
   .graph-node-cluster.pulse { animation: graphPulse 1.5s ease-in-out infinite; }
-  @keyframes graphPulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.15)} }
+  .graph-node-pulse { animation: graphPulse 2s ease-in-out infinite; }
+  @keyframes graphPulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.12)} }
   .graph-node-event-hot { animation: graphPulse 1.2s ease-in-out infinite; }
+  .graph-legend { position:absolute; bottom:16px; left:16px; background:rgba(4,6,8,0.9); border:1px solid var(--border); padding:12px; font-family:var(--mono); font-size:9px; z-index:10; pointer-events:none; }
 
   body.graph-mode .main { display:none; }
 </style>
@@ -294,12 +296,24 @@
 <!-- Full-page graph (separate view) -->
 <div id="graph-fullpage">
   <div class="graph-toolbar">
-    <span class="graph-toolbar-title">// CLUSTER NETWORK — D3 FORCE SIMULATION</span>
+    <span class="graph-toolbar-title">// COUNTRY NETWORK — GEOPOLITICAL BLOCS</span>
     <button class="graph-back-btn" id="graph-back-btn">← DASHBOARD</button>
   </div>
   <div id="graph-container">
+    <div class="graph-legend" id="graph-legend">
+      <div style="font-weight:700;margin-bottom:8px;letter-spacing:2px">BLOCS</div>
+      <div style="margin-bottom:4px"><span style="color:#00cfff">●</span> Western / NATO</div>
+      <div style="margin-bottom:4px"><span style="color:#ff3b5c">●</span> Eastern / Adversaries</div>
+      <div style="margin-bottom:4px"><span style="color:#ffb800">●</span> Neutral / Pivot</div>
+      <div style="margin-bottom:12px"><span style="color:#a064ff">●</span> Conflict Zone</div>
+      <div style="font-weight:700;margin-bottom:8px;letter-spacing:2px">LINKS</div>
+      <div style="margin-bottom:4px"><span style="color:#ff3b5c">──</span> Enemy / Conflict</div>
+      <div style="margin-bottom:4px"><span style="color:#ff3b5c">··</span> Proxy War</div>
+      <div style="margin-bottom:4px"><span style="color:#00cfff">──</span> Alliance / Ally</div>
+      <div><span style="color:#ffb800">··</span> Tension</div>
+    </div>
     <svg id="graph-svg" style="flex:1;width:100%;min-height:0;display:block"></svg>
-    <div id="graph-empty" style="display:none;flex:1;align-items:center;justify-content:center;font-family:var(--mono);font-size:12px;color:var(--text-dim)">No clusters yet — switch to Dashboard to load data</div>
+    <div id="graph-empty" style="display:none;flex:1;align-items:center;justify-content:center;font-family:var(--mono);font-size:12px;color:var(--text-dim)">No countries yet — switch to Dashboard to load data</div>
     <div id="graph-tooltip" style="position:absolute;pointer-events:none;display:none;font-family:var(--mono);font-size:11px;background:var(--bg3);border:1px solid var(--border);padding:10px 12px;border-radius:4px;max-width:280px;z-index:1000;box-shadow:0 4px 20px rgba(0,0,0,0.5)"></div>
   </div>
 </div>
@@ -312,12 +326,12 @@ let activeSort   = "prob";
 let activeView   = "markets"; // "markets" | "clusters" (dashboard only)
 let pageMode     = "dashboard"; // "dashboard" | "graph"
 let activeClusterEventIds = null;
-let graphHighlightedCluster = null; // cluster name when event node is clicked
+let graphHighlightedCountry = null;
 let graphSimulation = null;
 let graphNodes = null;
 let graphLinks = null;
 let graphLinkLabels = null;
-let lastClusterRelationshipsJson = "";
+let lastCountriesJson = "";
 let volHistory   = [];
 
 // ── SSE / POLLING (Vercel uses polling only; local uses SSE) ───
@@ -776,78 +790,54 @@ function flashNotification(alert) {
   }
 }
 
-// ── GRAPH (D3 force simulation) ──────────────────────────────
-const CLUSTER_COLORS = [
-  "#ff3b5c", "#ffb800", "#00cfff", "#00e87a", "#a064ff", "#ff6b35", "#4ecdc4"
-];
-
-function clusterColor(name) {
-  const clusters = appState.clusters || [];
-  const idx = clusters.findIndex(c => c.name === name);
-  return CLUSTER_COLORS[idx >= 0 ? idx % CLUSTER_COLORS.length : 0];
-}
+// ── GRAPH (D3 force simulation — country nodes by bloc) ───────
+const BLOC_COLORS = {
+  western:      "#00cfff",
+  eastern:      "#ff3b5c",
+  neutral:      "#ffb800",
+  conflict_zone: "#a064ff",
+};
 
 function buildGraphData() {
-  const nodes = [];
+  const nodes = (appState.countries || []).map(country => ({
+    id: country.name,
+    type: "country",
+    label: `${country.flag || ""} ${country.name}`,
+    flag: country.flag,
+    name: country.name,
+    bloc: country.bloc,
+    activity: country.activity || 0,
+    eventCount: (country.involvedEventIds || []).length,
+    size: 14 + (country.activity || 0) * 40,
+    color: BLOC_COLORS[country.bloc] || "#888",
+    involvedEventIds: country.involvedEventIds || [],
+    relationships: country.relationships || [],
+  }));
+
+  const seenLinks = new Set();
   const links = [];
-  const clusters = appState.clusters || [];
 
-  clusters.forEach(cluster => {
-    nodes.push({
-      id: `cluster_${cluster.name}`,
-      type: "cluster",
-      label: cluster.name,
-      score: cluster.clusterScore || 0,
-      size: 20 + (cluster.clusterScore || 0) / 5,
-      color: clusterColor(cluster.name),
-    });
+  (appState.countries || []).forEach(country => {
+    (country.relationships || []).forEach(rel => {
+      const key = [country.name, rel.with].sort().join("_");
+      if (seenLinks.has(key)) return;
+      seenLinks.add(key);
 
-    (cluster.events || []).forEach(event => {
-      const eid = event.id || `evt_${cluster.name}_${event.title?.slice(0,8) || Math.random()}`;
-      nodes.push({
-        id: String(eid),
-        type: "event",
-        label: event.title || "",
-        probability: event.probability || 0,
-        score: event.score || 0,
-        size: 6 + (event.probability || 0) * 18,
-        color: clusterColor(cluster.name),
-        cluster: cluster.name,
-      });
       links.push({
-        source: `cluster_${cluster.name}`,
-        target: String(eid),
-        strength: event.probability || 0.1,
+        source: country.name,
+        target: rel.with,
+        type: rel.type || "neutral",
+        strength: rel.strength || 0.5,
       });
     });
-
-    const hotEvents = (cluster.events || []).filter(e => (e.probability || 0) > 0.3);
-    for (let i = 0; i < hotEvents.length; i++) {
-      for (let j = i + 1; j < hotEvents.length; j++) {
-        const si = String(hotEvents[i].id || `evt_${cluster.name}_${i}`);
-        const sj = String(hotEvents[j].id || `evt_${cluster.name}_${j}`);
-        links.push({ source: si, target: sj, strength: 0.3, dashed: true });
-      }
-    }
-  });
-
-  // Build cross-cluster links from AI-generated relationships
-  (appState.clusterRelationships || []).forEach(rel => {
-    const nodeA = nodes.find(n => n.type === "cluster" && n.label === rel.from);
-    const nodeB = nodes.find(n => n.type === "cluster" && n.label === rel.to);
-    if (nodeA && nodeB) {
-      links.push({
-        source: nodeA.id,
-        target: nodeB.id,
-        type: "cross_cluster",
-        label: rel.label,
-        strength: (rel.strength || 0.5) * 0.08,
-        relStrength: rel.strength || 0.5,
-      });
-    }
   });
 
   return { nodes, links };
+}
+
+function getEventById(id) {
+  const markets = appState.markets || [];
+  return markets.find(m => String(m.id) === String(id));
 }
 
 function renderGraph() {
@@ -856,23 +846,20 @@ function renderGraph() {
   const tooltip = document.getElementById("graph-tooltip");
   if (!container || !svg || !d3) return;
 
-  const clusters = appState.clusters || [];
-  if (clusters.length === 0) return;
+  const countries = appState.countries || [];
+  if (countries.length === 0) return;
 
   const rect = container.getBoundingClientRect();
   const width = rect.width || 800;
   const height = rect.height || 500;
 
   const { nodes, links } = buildGraphData();
-  const prevNodeIds = (graphNodes && graphNodes.data()) ? graphNodes.data().map(d => d.id).sort().join(",") : "";
-  const currNodeIds = nodes.map(d => d.id).sort().join(",");
-  const structureChanged = prevNodeIds !== currNodeIds;
 
   svg.innerHTML = "";
   const g = d3.select(svg).append("g");
 
   const defs = g.append("defs");
-  defs.append("filter").attr("id", "glow").append("feGaussianBlur").attr("stdDeviation", 3).attr("result", "coloredBlur");
+  defs.append("filter").attr("id", "glow").append("feGaussianBlur").attr("stdDeviation", 4).attr("result", "coloredBlur");
   const feMerge = defs.select("#glow").append("feMerge");
   feMerge.append("feMergeNode").attr("in", "coloredBlur");
   feMerge.append("feMergeNode").attr("in", "SourceGraphic");
@@ -880,54 +867,24 @@ function renderGraph() {
   const zoom = d3.zoom().scaleExtent([0.2, 4]).on("zoom", (ev) => g.attr("transform", ev.transform));
   d3.select(svg).call(zoom);
 
+  // Links — style by type
+  const linkStyle = (d) => {
+    const src = typeof d.source === "object" ? d.source : nodes.find(n => n.id === d.source);
+    const t = d.type || "neutral";
+    if (t === "enemy") return { stroke: "#ff3b5c", opacity: 0.7, width: 2.5, dash: null };
+    if (t === "proxy") return { stroke: "#ff3b5c", opacity: 0.4, width: 1.5, dash: "4,3" };
+    if (t === "ally") return { stroke: (src && src.color) || "#00cfff", opacity: 0.5, width: 2, dash: null };
+    if (t === "tension") return { stroke: "#ffb800", opacity: 0.4, width: 1.5, dash: "6,3" };
+    return { stroke: "rgba(255,255,255,0.1)", opacity: 1, width: 1, dash: "3,4" };
+  };
+
   const link = g.append("g").attr("class", "links").selectAll("line")
     .data(links)
     .join("line")
-    .attr("stroke", d => {
-      if (d.type === "cross_cluster") {
-        const s = d.relStrength || 0.5;
-        if (s > 0.7) return "rgba(255,59,92,0.5)";
-        if (s > 0.4) return "rgba(255,184,0,0.35)";
-        return "rgba(255,255,255,0.15)";
-      }
-      const src = typeof d.source === "object" ? d.source : nodes.find(n => n.id === d.source);
-      return (src && src.color) || "rgba(255,255,255,0.2)";
-    })
-    .attr("stroke-width", d => {
-      if (d.type === "cross_cluster") {
-        const s = d.relStrength || 0.5;
-        if (s > 0.7) return 2;
-        if (s > 0.4) return 1.5;
-        return 1;
-      }
-      return 1;
-    })
-    .attr("stroke-opacity", d => {
-      if (d.type === "cross_cluster") return 1;
-      return d.dashed ? 0.15 : 0.3;
-    })
-    .attr("stroke-dasharray", d => d.type === "cross_cluster" ? "5,3" : (d.dashed ? "3,3" : null));
-
-  const linkLabel = g.append("g").attr("class", "link-labels").selectAll("g")
-    .data(links.filter(d => d.type === "cross_cluster" && d.label))
-    .join("g")
-    .attr("class", "link-label");
-  linkLabel.append("rect")
-    .attr("rx", 2).attr("ry", 2)
-    .attr("fill", "rgba(4,6,8,0.8)")
-    .attr("stroke", "none");
-  linkLabel.append("text")
-    .attr("font-family", "'Share Tech Mono', monospace")
-    .attr("font-size", 7)
-    .attr("text-anchor", "middle")
-    .attr("dy", "0.35em")
-    .text(d => d.label)
-    .attr("fill", d => {
-      const s = d.relStrength || 0.5;
-      if (s > 0.7) return "rgba(255,59,92,0.7)";
-      if (s > 0.4) return "rgba(255,184,0,0.6)";
-      return "rgba(255,255,255,0.3)";
-    });
+    .attr("stroke", d => linkStyle(d).stroke)
+    .attr("stroke-width", d => linkStyle(d).width)
+    .attr("stroke-opacity", d => linkStyle(d).opacity)
+    .attr("stroke-dasharray", d => linkStyle(d).dash);
 
   const node = g.append("g").attr("class", "nodes").selectAll("g")
     .data(nodes)
@@ -950,59 +907,48 @@ function renderGraph() {
       }));
 
   node.append("circle")
-    .attr("class", "graph-node-main")
+    .attr("class", d => "graph-node-main" + ((d.activity || 0) > 0.7 ? " graph-node-pulse" : ""))
     .attr("r", d => d.size)
     .attr("fill", d => d.color)
-    .attr("stroke", d => (d.type === "event" && d.score > 30) ? "white" : "none")
-    .attr("stroke-width", d => (d.type === "event" && d.score > 30) ? 1 : 0)
-    .attr("fill-opacity", d => {
-      if (d.type === "cluster") return 1;
-      return d.score > 0 ? 0.9 : 0.4;
-    })
-    .attr("class", d => {
-      if (d.type === "cluster") return "graph-node-cluster" + (d.score > 60 ? " pulse" : "");
-      return "";
-    })
-    .attr("filter", d => d.type === "cluster" ? "url(#glow)" : null);
-
-  node.filter(d => d.type === "event" && ((d.probability || 0) > 0.7)).append("circle")
-    .attr("r", d => d.size + 3)
-    .attr("fill", "none")
+    .attr("fill-opacity", 0.2)
     .attr("stroke", d => d.color)
-    .attr("stroke-width", 1)
-    .attr("stroke-opacity", 0.5)
-    .attr("class", "graph-node-event-hot");
+    .attr("stroke-width", 2)
+    .attr("filter", "url(#glow)");
 
   node.append("text")
+    .attr("class", "graph-flag")
     .attr("text-anchor", "middle")
-    .attr("dy", d => d.type === "cluster" ? d.size + 14 : 0)
-    .attr("font-family", d => d.type === "cluster" ? "Barlow Condensed, sans-serif" : "'Share Tech Mono', monospace")
-    .attr("font-size", d => d.type === "cluster" ? 12 : 8)
-    .attr("font-weight", d => d.type === "cluster" ? "bold" : "normal")
-    .attr("fill", d => d.type === "cluster" ? (d.color || "var(--text)") : "rgba(200,220,210,0.7)")
-    .attr("text-transform", d => d.type === "cluster" ? "uppercase" : "none")
-    .text(d => {
-      if (d.type === "cluster") return d.label;
-      if ((d.probability || 0) > 0.5 || (d.score || 0) > 20) return (d.label || "").slice(0, 35);
-      return "";
-    })
-    .attr("display", d => {
-      if (d.type === "cluster") return "block";
-      return ((d.probability || 0) > 0.5 || (d.score || 0) > 20) ? "block" : "none";
-    });
+    .attr("dominant-baseline", "central")
+    .attr("font-size", d => 16 + (d.activity || 0) * 12)
+    .text(d => d.flag || "");
+
+  const labelGroup = node.append("g").attr("class", "graph-label");
+  labelGroup.append("rect")
+    .attr("rx", 2).attr("ry", 2)
+    .attr("fill", "rgba(4,6,8,0.9)")
+    .attr("stroke", "none");
+  labelGroup.append("text")
+    .attr("text-anchor", "middle")
+    .attr("font-family", "Barlow Condensed, sans-serif")
+    .attr("font-weight", 700)
+    .attr("font-size", d => 10 + (d.activity || 0) * 4)
+    .attr("fill", d => d.color)
+    .text(d => d.name);
 
   node.on("mouseover", (ev, d) => {
-    if (d.type === "event") {
-      tooltip.style.display = "block";
-      tooltip.innerHTML = `
-        <div style="font-family:var(--cond);font-weight:600;margin-bottom:6px;color:${d.color}">${(d.label || "").slice(0, 80)}${(d.label || "").length > 80 ? "…" : ""}</div>
-        <div>Probability: ${Math.round((d.probability || 0) * 100)}%</div>
-        <div style="margin-top:4px">Score: <span style="color:var(--${d.score >= 80 ? 'red' : d.score >= 60 ? 'amber' : 'cyan'})">${d.score}</span></div>
-        <div style="font-size:9px;color:var(--text-dim);margin-top:4px">Cluster: ${d.cluster || ""}</div>
-      `;
-      tooltip.style.left = (ev.pageX + 12) + "px";
-      tooltip.style.top = (ev.pageY + 12) + "px";
-    }
+    const events = (d.involvedEventIds || []).slice(0, 4).map(id => getEventById(id)).filter(Boolean);
+    const blocLabel = (d.bloc || "").replace("_", " ");
+    tooltip.style.display = "block";
+    tooltip.innerHTML = `
+      <div style="font-size:18px;margin-bottom:6px">${d.flag || ""} ${d.name}</div>
+      <div style="font-family:var(--mono);font-size:9px;padding:3px 8px;background:${d.color}22;color:${d.color};border:1px solid ${d.color};display:inline-block;margin-bottom:8px">${blocLabel.toUpperCase()}</div>
+      <div style="font-size:9px;color:var(--text-dim);margin-bottom:4px">Activity: ${Math.round((d.activity || 0) * 100)}%</div>
+      <div style="height:4px;background:rgba(255,255,255,0.1);margin-bottom:8px"><div style="height:100%;width:${(d.activity || 0) * 100}%;background:${d.color}"></div></div>
+      ${events.length ? `<div style="font-size:9px;color:var(--text-dim);margin-top:6px">Related events:</div>` : ""}
+      ${events.map(e => `<div style="font-size:10px;margin-top:3px">${(e.title || "").slice(0, 50)}… — ${Math.round((e.probability || 0) * 100)}%</div>`).join("")}
+    `;
+    tooltip.style.left = (ev.pageX + 12) + "px";
+    tooltip.style.top = (ev.pageY + 12) + "px";
   }).on("mouseout", () => {
     tooltip.style.display = "none";
   }).on("mousemove", (ev) => {
@@ -1014,92 +960,103 @@ function renderGraph() {
 
   node.on("click", (ev, d) => {
     ev.stopPropagation();
-    if (d.type === "cluster") {
-      applyClusterFilter(d.label);
-      return;
-    }
-    if (d.type === "event") {
-      if (graphHighlightedCluster === d.cluster) {
-        graphHighlightedCluster = null;
-      } else {
-        graphHighlightedCluster = d.cluster;
-      }
-      updateGraphHighlight();
-    }
-  });
-
-  d3.select(svg).on("click", () => {
-    graphHighlightedCluster = null;
+    graphHighlightedCountry = graphHighlightedCountry === d.name ? null : d.name;
     updateGraphHighlight();
   });
 
+  d3.select(svg).on("click", () => {
+    graphHighlightedCountry = null;
+    updateGraphHighlight();
+  });
+
+  function getAllies(name) {
+    const country = (appState.countries || []).find(c => c.name === name);
+    if (!country) return new Set();
+    const allies = new Set([name]);
+    (country.relationships || []).forEach(r => {
+      if (r.type === "ally") allies.add(r.with);
+    });
+    return allies;
+  }
+
   function updateGraphHighlight() {
     if (!graphNodes) return;
+    const allies = graphHighlightedCountry ? getAllies(graphHighlightedCountry) : null;
     graphNodes.attr("opacity", d => {
-      if (!graphHighlightedCluster) return 1;
-      if (d.type === "cluster") return d.label === graphHighlightedCluster ? 1 : 0.1;
-      return d.cluster === graphHighlightedCluster ? 1 : 0.1;
+      if (!allies) return 1;
+      return allies.has(d.name) ? 1 : 0.1;
     });
     if (graphLinks) {
       graphLinks.attr("stroke-opacity", d => {
-        if (!graphHighlightedCluster) return d.type === "cross_cluster" ? 1 : (d.dashed ? 0.15 : 0.3);
-        const srcCluster = (d.source?.type === "cluster" ? d.source?.label : d.source?.cluster) || null;
-        const tgtCluster = (d.target?.type === "cluster" ? d.target?.label : d.target?.cluster) || null;
-        const inCluster = srcCluster === graphHighlightedCluster || tgtCluster === graphHighlightedCluster;
-        return inCluster ? (d.type === "cross_cluster" ? 1 : (d.dashed ? 0.15 : 0.3)) : 0.02;
-      });
-    }
-    if (graphLinkLabels) {
-      graphLinkLabels.attr("opacity", d => {
-        if (!graphHighlightedCluster) return 1;
-        const srcCluster = (d.source?.type === "cluster" ? d.source?.label : d.source?.cluster) || null;
-        const tgtCluster = (d.target?.type === "cluster" ? d.target?.label : d.target?.cluster) || null;
-        const inCluster = srcCluster === graphHighlightedCluster || tgtCluster === graphHighlightedCluster;
-        return inCluster ? 1 : 0.1;
+        if (!allies) return linkStyle(d).opacity;
+        const src = typeof d.source === "object" ? d.source : nodes.find(n => n.id === d.source);
+        const tgt = typeof d.target === "object" ? d.target : nodes.find(n => n.id === d.target);
+        const srcName = src?.name || d.source;
+        const tgtName = tgt?.name || d.target;
+        return (allies.has(srcName) || allies.has(tgtName)) ? linkStyle(d).opacity : 0.05;
       });
     }
   }
 
   updateGraphHighlight();
 
-  // Force simulation
+  // Bloc separation force
+  function blocSeparationForce(alpha) {
+    nodes.forEach(n => {
+      if (n.bloc === "western") n.vx = (n.vx || 0) - 0.5 * alpha;
+      if (n.bloc === "eastern") n.vx = (n.vx || 0) + 0.5 * alpha;
+      if (n.bloc === "neutral") n.vy = (n.vy || 0) + 0.3 * alpha;
+      if (n.bloc === "conflict_zone") n.vy = (n.vy || 0) - 0.3 * alpha;
+    });
+  }
+
   const simulation = d3.forceSimulation(nodes)
     .force("link", d3.forceLink(links).id(d => d.id)
-      .strength(d => d.type === "cross_cluster" ? (d.strength || 0.04) : (d.strength || 0.5) * 0.3)
-      .distance(d => d.type === "cross_cluster" ? 180 : (d.dashed ? 60 : 120)))
-    .force("charge", d3.forceManyBody().strength(d => d.type === "cluster" ? -400 : -80))
+      .distance(d => {
+        if (d.type === "ally") return 80;
+        if (d.type === "enemy") return 200;
+        if (d.type === "proxy") return 150;
+        if (d.type === "tension") return 180;
+        return 160;
+      })
+      .strength(d => {
+        if (d.type === "ally") return 0.8;
+        if (d.type === "enemy") return 0.1;
+        return 0.3;
+      }))
+    .force("charge", d3.forceManyBody().strength(d => -100 - (d.activity || 0) * 200))
     .force("center", d3.forceCenter(width / 2, height / 2))
-    .force("collision", d3.forceCollide().radius(d => d.size + 4));
+    .force("collision", d3.forceCollide().radius(d => d.size + 20))
+    .force("bloc_separation", { force: blocSeparationForce });
 
   simulation.on("tick", () => {
     link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
        .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
     node.attr("transform", d => `translate(${d.x},${d.y})`);
-    linkLabel.attr("transform", d => `translate(${(d.source.x + d.target.x) / 2},${(d.source.y + d.target.y) / 2})`)
-      .each(function() {
-        const g = d3.select(this);
-        const text = g.select("text");
-        if (text.node()) {
-          const b = text.node().getBBox();
-          g.select("rect").attr("x", b.x - 3).attr("y", b.y - 1).attr("width", b.width + 6).attr("height", b.height + 2);
-        }
-      });
+    node.select(".graph-label").attr("transform", d => `translate(0,${d.size + 14})`);
+    node.select(".graph-label rect").each(function(d) {
+      const text = d3.select(this.parentNode).select("text");
+      if (text.node()) {
+        const b = text.node().getBBox();
+        d3.select(this).attr("x", b.x - 4).attr("y", b.y - 2).attr("width", b.width + 8).attr("height", b.height + 4);
+      }
+    });
   });
 
   graphSimulation = simulation;
   graphNodes = node;
   graphLinks = link;
-  graphLinkLabels = linkLabel;
-  lastClusterRelationshipsJson = JSON.stringify(appState.clusterRelationships || []);
+  graphLinkLabels = null;
+  lastCountriesJson = JSON.stringify(appState.countries || []);
 }
 
 function updateGraph() {
   if (pageMode !== "graph") return;
-  const clusters = appState.clusters || [];
+  const countries = appState.countries || [];
   const container = document.getElementById("graph-container");
   const svg = document.getElementById("graph-svg");
   if (!container || !svg) return;
-  if (clusters.length === 0) {
+  if (countries.length === 0) {
     const emptyEl = document.getElementById("graph-empty");
     const svgEl = document.getElementById("graph-svg");
     if (emptyEl) { emptyEl.style.display = "flex"; emptyEl.style.flex = "1"; }
@@ -1115,32 +1072,11 @@ function updateGraph() {
     return;
   }
 
-  const { nodes, links } = buildGraphData();
-  const prevIds = (graphNodes.data() || []).map(d => d.id).sort().join(",");
-  const currIds = nodes.map(d => d.id).sort().join(",");
-  const currRelJson = JSON.stringify(appState.clusterRelationships || []);
-  if (prevIds !== currIds || currRelJson !== lastClusterRelationshipsJson) {
+  const currCountriesJson = JSON.stringify(appState.countries || []);
+  if (currCountriesJson !== lastCountriesJson) {
     renderGraph();
     return;
   }
-
-  const flatEvents = clusters.flatMap(c => (c.events || []));
-  graphNodes.selectAll("circle.graph-node-main").each(function(d) {
-    const updated = flatEvents.find(e => String(e.id) === String(d.id));
-    if (updated && d.type === "event") {
-      d.probability = updated.probability;
-      d.score = updated.score;
-      d.size = 6 + (updated.probability || 0) * 18;
-    }
-  }).attr("r", d => d.size).attr("fill-opacity", function(d) {
-    if (d.type === "cluster") return 1;
-    return (d.score || 0) > 0 ? 0.9 : 0.4;
-  }).attr("stroke", function(d) {
-    return (d.type === "event" && (d.score || 0) > 30) ? "white" : "none";
-  }).attr("stroke-width", function(d) {
-    return (d.type === "event" && (d.score || 0) > 30) ? 1 : 0;
-  });
-  graphNodes.selectAll("circle.graph-node-event-hot").attr("r", d => d.size + 3);
 }
 
 // ── EVENTS ──────────────────────────────────────────────────
