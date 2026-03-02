@@ -6,6 +6,7 @@
 <title>SIGINT — Polymarket Intelligence</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow+Condensed:wght@300;400;600;700;900&family=Barlow:wght@300;400&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
 <style>
   :root {
     --bg: #040608; --bg2: #080d12; --bg3: #0d1520;
@@ -162,6 +163,14 @@
   ::-webkit-scrollbar{width:3px} ::-webkit-scrollbar-track{background:var(--bg)} ::-webkit-scrollbar-thumb{background:rgba(0,232,122,0.2)}
   .empty-state { text-align:center; padding:40px 20px; font-family:var(--mono); font-size:11px; color:var(--text-dim); }
   #connection-status { transition:all 0.3s; }
+
+  /* Graph view */
+  #graph-container { cursor:grab; }
+  #graph-container:active { cursor:grabbing; }
+  .graph-node-cluster { filter: drop-shadow(0 0 8px currentColor); }
+  .graph-node-cluster.pulse { animation: graphPulse 1.5s ease-in-out infinite; }
+  @keyframes graphPulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.15)} }
+  .graph-node-event-hot { animation: graphPulse 1.2s ease-in-out infinite; }
 </style>
 </head>
 <body>
@@ -220,18 +229,23 @@
         <div class="feed-title">// GEOPOLITICAL MARKETS — LIVE</div>
         <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-end">
           <div class="filter-row">
-            <button class="filter-btn active" data-sort="prob">PROB</button>
-            <button class="filter-btn" data-sort="score">SCORE</button>
-            <button class="filter-btn" data-sort="spike">SPIKE</button>
-            <button class="filter-btn" data-sort="price">MOVE</button>
+            <button class="filter-btn sort-btn active" data-sort="prob">PROB</button>
+            <button class="filter-btn sort-btn" data-sort="score">SCORE</button>
+            <button class="filter-btn sort-btn" data-sort="spike">SPIKE</button>
+            <button class="filter-btn sort-btn" data-sort="price">MOVE</button>
           </div>
           <div class="filter-row">
-            <button class="filter-btn active" data-view="markets" id="view-markets-btn">MARKETS</button>
-            <button class="filter-btn" data-view="clusters" id="view-clusters-btn">CLUSTERS</button>
+            <button class="filter-btn view-btn active" data-view="markets" id="view-markets-btn">MARKETS</button>
+            <button class="filter-btn view-btn" data-view="clusters" id="view-clusters-btn">CLUSTERS</button>
+            <button class="filter-btn view-btn" data-view="graph" id="view-graph-btn">GRAPH</button>
           </div>
         </div>
       </div>
       <div id="flash-area"></div>
+      <div id="graph-container" style="display:none;position:relative;flex:1;min-height:400px;background:#040608">
+        <svg id="graph-svg" style="width:100%;height:100%;display:block"></svg>
+        <div id="graph-tooltip" style="position:absolute;pointer-events:none;display:none;font-family:var(--mono);font-size:11px;background:var(--bg3);border:1px solid var(--border);padding:10px 12px;border-radius:4px;max-width:280px;z-index:1000;box-shadow:0 4px 20px rgba(0,0,0,0.5)"></div>
+      </div>
       <div id="markets-feed">
         <div class="empty-state">⟳ Connecting to server...</div>
       </div>
@@ -267,8 +281,12 @@
 let appState = { markets:[], alerts:[], trades:[], stats:{}, clusters:[] };
 let activeFilter = "all";
 let activeSort   = "prob";
-let activeView   = "markets"; // "markets" | "clusters"
+let activeView   = "markets"; // "markets" | "clusters" | "graph"
 let activeClusterEventIds = null;
+let graphHighlightedCluster = null; // cluster name when event node is clicked
+let graphSimulation = null;
+let graphNodes = null;
+let graphLinks = null;
 let volHistory   = [];
 
 // ── SSE / POLLING (Vercel uses polling only; local uses SSE) ───
@@ -468,6 +486,17 @@ function render() {
   else filtered.sort((a,b) => (b.probability||0) - (a.probability||0));
 
   const feedEl = document.getElementById("markets-feed");
+  const graphContainer = document.getElementById("graph-container");
+
+  if (activeView === "graph") {
+    feedEl.style.display = "none";
+    if (graphContainer) graphContainer.style.display = "block";
+    updateGraph();
+  } else {
+    if (graphContainer) graphContainer.style.display = "none";
+    feedEl.style.display = "block";
+  }
+
   if (activeView === "clusters") {
     if (!clusters || clusters.length === 0) {
       feedEl.innerHTML = '<div class="empty-state">No clusters yet</div>';
@@ -713,6 +742,295 @@ function flashNotification(alert) {
   }
 }
 
+// ── GRAPH (D3 force simulation) ──────────────────────────────
+const CLUSTER_COLORS = [
+  "#ff3b5c", "#ffb800", "#00cfff", "#00e87a", "#a064ff", "#ff6b35", "#4ecdc4"
+];
+
+function clusterColor(name) {
+  const clusters = appState.clusters || [];
+  const idx = clusters.findIndex(c => c.name === name);
+  return CLUSTER_COLORS[idx >= 0 ? idx % CLUSTER_COLORS.length : 0];
+}
+
+function buildGraphData() {
+  const nodes = [];
+  const links = [];
+  const clusters = appState.clusters || [];
+
+  clusters.forEach(cluster => {
+    nodes.push({
+      id: `cluster_${cluster.name}`,
+      type: "cluster",
+      label: cluster.name,
+      score: cluster.clusterScore || 0,
+      size: 20 + (cluster.clusterScore || 0) / 5,
+      color: clusterColor(cluster.name),
+    });
+
+    (cluster.events || []).forEach(event => {
+      const eid = event.id || `evt_${cluster.name}_${event.title?.slice(0,8) || Math.random()}`;
+      nodes.push({
+        id: String(eid),
+        type: "event",
+        label: event.title || "",
+        probability: event.probability || 0,
+        score: event.score || 0,
+        size: 6 + (event.probability || 0) * 18,
+        color: clusterColor(cluster.name),
+        cluster: cluster.name,
+      });
+      links.push({
+        source: `cluster_${cluster.name}`,
+        target: String(eid),
+        strength: event.probability || 0.1,
+      });
+    });
+
+    const hotEvents = (cluster.events || []).filter(e => (e.probability || 0) > 0.3);
+    for (let i = 0; i < hotEvents.length; i++) {
+      for (let j = i + 1; j < hotEvents.length; j++) {
+        const si = String(hotEvents[i].id || `evt_${cluster.name}_${i}`);
+        const sj = String(hotEvents[j].id || `evt_${cluster.name}_${j}`);
+        links.push({ source: si, target: sj, strength: 0.3, dashed: true });
+      }
+    }
+  });
+
+  return { nodes, links };
+}
+
+function renderGraph() {
+  const container = document.getElementById("graph-container");
+  const svg = document.getElementById("graph-svg");
+  const tooltip = document.getElementById("graph-tooltip");
+  if (!container || !svg || !d3) return;
+
+  const clusters = appState.clusters || [];
+  if (clusters.length === 0) {
+    container.style.display = "none";
+    return;
+  }
+
+  container.style.display = "block";
+  document.getElementById("markets-feed").style.display = "none";
+
+  const rect = container.getBoundingClientRect();
+  const width = rect.width || 800;
+  const height = rect.height || 500;
+
+  const { nodes, links } = buildGraphData();
+  const prevNodeIds = (graphNodes && graphNodes.data()) ? graphNodes.data().map(d => d.id).sort().join(",") : "";
+  const currNodeIds = nodes.map(d => d.id).sort().join(",");
+  const structureChanged = prevNodeIds !== currNodeIds;
+
+  svg.innerHTML = "";
+  const g = d3.select(svg).append("g");
+
+  const defs = g.append("defs");
+  defs.append("filter").attr("id", "glow").append("feGaussianBlur").attr("stdDeviation", 3).attr("result", "coloredBlur");
+  const feMerge = defs.select("#glow").append("feMerge");
+  feMerge.append("feMergeNode").attr("in", "coloredBlur");
+  feMerge.append("feMergeNode").attr("in", "SourceGraphic");
+
+  const zoom = d3.zoom().scaleExtent([0.2, 4]).on("zoom", (ev) => g.attr("transform", ev.transform));
+  d3.select(svg).call(zoom);
+
+  const link = g.append("g").attr("class", "links").selectAll("line")
+    .data(links)
+    .join("line")
+    .attr("stroke", d => {
+      const src = typeof d.source === "object" ? d.source : nodes.find(n => n.id === d.source);
+      return (src && src.color) || "rgba(255,255,255,0.2)";
+    })
+    .attr("stroke-opacity", d => d.dashed ? 0.15 : 0.3)
+    .attr("stroke-dasharray", d => d.dashed ? "3,3" : null);
+
+  const node = g.append("g").attr("class", "nodes").selectAll("g")
+    .data(nodes)
+    .join("g")
+    .attr("cursor", "pointer")
+    .call(d3.drag()
+      .on("start", (ev, d) => {
+        if (!ev.active) graphSimulation.alphaTarget(0.3).restart();
+        d.fx = d.x;
+        d.fy = d.y;
+      })
+      .on("drag", (ev, d) => {
+        d.fx = ev.x;
+        d.fy = ev.y;
+      })
+      .on("end", (ev, d) => {
+        if (!ev.active) graphSimulation.alphaTarget(0);
+        d.fx = null;
+        d.fy = null;
+      }));
+
+  node.append("circle")
+    .attr("class", "graph-node-main")
+    .attr("r", d => d.size)
+    .attr("fill", d => d.color)
+    .attr("stroke", d => (d.type === "event" && d.score > 30) ? "white" : "none")
+    .attr("stroke-width", d => (d.type === "event" && d.score > 30) ? 1 : 0)
+    .attr("fill-opacity", d => {
+      if (d.type === "cluster") return 1;
+      return d.score > 0 ? 0.9 : 0.4;
+    })
+    .attr("class", d => {
+      if (d.type === "cluster") return "graph-node-cluster" + (d.score > 60 ? " pulse" : "");
+      return "";
+    })
+    .attr("filter", d => d.type === "cluster" ? "url(#glow)" : null);
+
+  node.filter(d => d.type === "event" && ((d.probability || 0) > 0.7)).append("circle")
+    .attr("r", d => d.size + 3)
+    .attr("fill", "none")
+    .attr("stroke", d => d.color)
+    .attr("stroke-width", 1)
+    .attr("stroke-opacity", 0.5)
+    .attr("class", "graph-node-event-hot");
+
+  node.append("text")
+    .attr("text-anchor", "middle")
+    .attr("dy", d => d.type === "cluster" ? d.size + 14 : 0)
+    .attr("font-family", d => d.type === "cluster" ? "Barlow Condensed, sans-serif" : "'Share Tech Mono', monospace")
+    .attr("font-size", d => d.type === "cluster" ? 12 : 8)
+    .attr("font-weight", d => d.type === "cluster" ? "bold" : "normal")
+    .attr("fill", d => d.type === "cluster" ? (d.color || "var(--text)") : "rgba(200,220,210,0.7)")
+    .attr("text-transform", d => d.type === "cluster" ? "uppercase" : "none")
+    .text(d => {
+      if (d.type === "cluster") return d.label;
+      if ((d.probability || 0) > 0.5 || (d.score || 0) > 20) return (d.label || "").slice(0, 35);
+      return "";
+    })
+    .attr("display", d => {
+      if (d.type === "cluster") return "block";
+      return ((d.probability || 0) > 0.5 || (d.score || 0) > 20) ? "block" : "none";
+    });
+
+  node.on("mouseover", (ev, d) => {
+    if (d.type === "event") {
+      tooltip.style.display = "block";
+      tooltip.innerHTML = `
+        <div style="font-family:var(--cond);font-weight:600;margin-bottom:6px;color:${d.color}">${(d.label || "").slice(0, 80)}${(d.label || "").length > 80 ? "…" : ""}</div>
+        <div>Probability: ${Math.round((d.probability || 0) * 100)}%</div>
+        <div style="margin-top:4px">Score: <span style="color:var(--${d.score >= 80 ? 'red' : d.score >= 60 ? 'amber' : 'cyan'})">${d.score}</span></div>
+        <div style="font-size:9px;color:var(--text-dim);margin-top:4px">Cluster: ${d.cluster || ""}</div>
+      `;
+      tooltip.style.left = (ev.pageX + 12) + "px";
+      tooltip.style.top = (ev.pageY + 12) + "px";
+    }
+  }).on("mouseout", () => {
+    tooltip.style.display = "none";
+  }).on("mousemove", (ev) => {
+    if (tooltip.style.display === "block") {
+      tooltip.style.left = (ev.pageX + 12) + "px";
+      tooltip.style.top = (ev.pageY + 12) + "px";
+    }
+  });
+
+  node.on("click", (ev, d) => {
+    ev.stopPropagation();
+    if (d.type === "cluster") {
+      applyClusterFilter(d.label);
+      return;
+    }
+    if (d.type === "event") {
+      if (graphHighlightedCluster === d.cluster) {
+        graphHighlightedCluster = null;
+      } else {
+        graphHighlightedCluster = d.cluster;
+      }
+      updateGraphHighlight();
+    }
+  });
+
+  d3.select(svg).on("click", () => {
+    graphHighlightedCluster = null;
+    updateGraphHighlight();
+  });
+
+  function updateGraphHighlight() {
+    if (!graphNodes) return;
+    graphNodes.attr("opacity", d => {
+      if (!graphHighlightedCluster) return 1;
+      if (d.type === "cluster") return d.label === graphHighlightedCluster ? 1 : 0.1;
+      return d.cluster === graphHighlightedCluster ? 1 : 0.1;
+    });
+    if (graphLinks) {
+      graphLinks.attr("stroke-opacity", d => {
+        if (!graphHighlightedCluster) return d.dashed ? 0.15 : 0.3;
+        const srcCluster = (d.source?.type === "cluster" ? d.source?.label : d.source?.cluster) || null;
+        const tgtCluster = (d.target?.type === "cluster" ? d.target?.label : d.target?.cluster) || null;
+        const inCluster = srcCluster === graphHighlightedCluster || tgtCluster === graphHighlightedCluster;
+        return inCluster ? (d.dashed ? 0.15 : 0.3) : 0.02;
+      });
+    }
+  }
+
+  updateGraphHighlight();
+
+  // Force simulation
+  const simulation = d3.forceSimulation(nodes)
+    .force("link", d3.forceLink(links).id(d => d.id).strength(d => (d.strength || 0.5) * 0.3).distance(d => d.dashed ? 60 : 120))
+    .force("charge", d3.forceManyBody().strength(d => d.type === "cluster" ? -400 : -80))
+    .force("center", d3.forceCenter(width / 2, height / 2))
+    .force("collision", d3.forceCollide().radius(d => d.size + 4));
+
+  simulation.on("tick", () => {
+    link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+       .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+    node.attr("transform", d => `translate(${d.x},${d.y})`);
+  });
+
+  graphSimulation = simulation;
+  graphNodes = node;
+  graphLinks = link;
+}
+
+function updateGraph() {
+  if (activeView !== "graph") return;
+  const clusters = appState.clusters || [];
+  const container = document.getElementById("graph-container");
+  const svg = document.getElementById("graph-svg");
+  if (!container || !svg) return;
+  if (clusters.length === 0) {
+    container.style.display = "none";
+    document.getElementById("markets-feed").style.display = "block";
+    return;
+  }
+  if (!graphNodes) {
+    renderGraph();
+    return;
+  }
+
+  const { nodes } = buildGraphData();
+  const prevIds = (graphNodes.data() || []).map(d => d.id).sort().join(",");
+  const currIds = nodes.map(d => d.id).sort().join(",");
+  if (prevIds !== currIds) {
+    renderGraph();
+    return;
+  }
+
+  const flatEvents = clusters.flatMap(c => (c.events || []));
+  graphNodes.selectAll("circle.graph-node-main").each(function(d) {
+    const updated = flatEvents.find(e => String(e.id) === String(d.id));
+    if (updated && d.type === "event") {
+      d.probability = updated.probability;
+      d.score = updated.score;
+      d.size = 6 + (updated.probability || 0) * 18;
+    }
+  }).attr("r", d => d.size).attr("fill-opacity", function(d) {
+    if (d.type === "cluster") return 1;
+    return (d.score || 0) > 0 ? 0.9 : 0.4;
+  }).attr("stroke", function(d) {
+    return (d.type === "event" && (d.score || 0) > 30) ? "white" : "none";
+  }).attr("stroke-width", function(d) {
+    return (d.type === "event" && (d.score || 0) > 30) ? 1 : 0;
+  });
+  graphNodes.selectAll("circle.graph-node-event-hot").attr("r", d => d.size + 3);
+}
+
 // ── EVENTS ──────────────────────────────────────────────────
 document.querySelectorAll(".cat-item").forEach(el => {
   el.addEventListener("click", () => {
@@ -728,6 +1046,7 @@ document.getElementById("view-markets-btn").addEventListener("click", () => {
   activeClusterEventIds = null;
   document.getElementById("view-markets-btn").classList.add("active");
   document.getElementById("view-clusters-btn").classList.remove("active");
+  document.getElementById("view-graph-btn").classList.remove("active");
   render();
 });
 
@@ -736,6 +1055,16 @@ document.getElementById("view-clusters-btn").addEventListener("click", () => {
   activeClusterEventIds = null;
   document.getElementById("view-clusters-btn").classList.add("active");
   document.getElementById("view-markets-btn").classList.remove("active");
+  document.getElementById("view-graph-btn").classList.remove("active");
+  render();
+});
+
+document.getElementById("view-graph-btn").addEventListener("click", () => {
+  activeView = "graph";
+  activeClusterEventIds = null;
+  document.getElementById("view-graph-btn").classList.add("active");
+  document.getElementById("view-markets-btn").classList.remove("active");
+  document.getElementById("view-clusters-btn").classList.remove("active");
   render();
 });
 
@@ -746,12 +1075,13 @@ function applyClusterFilter(name) {
   activeClusterEventIds = new Set((cluster.events || []).map(e => String(e.id)));
   document.getElementById("view-markets-btn").classList.add("active");
   document.getElementById("view-clusters-btn").classList.remove("active");
+  document.getElementById("view-graph-btn").classList.remove("active");
   render();
 }
 
-document.querySelectorAll(".filter-btn").forEach(el => {
+document.querySelectorAll(".filter-btn.sort-btn").forEach(el => {
   el.addEventListener("click", () => {
-    document.querySelectorAll(".filter-btn").forEach(e => e.classList.remove("active"));
+    document.querySelectorAll(".filter-btn.sort-btn").forEach(e => e.classList.remove("active"));
     el.classList.add("active");
     activeSort = el.dataset.sort;
     render();
