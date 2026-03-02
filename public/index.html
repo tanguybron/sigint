@@ -905,7 +905,11 @@ function buildGraphData() {
     });
   });
 
-  return { nodes, links };
+  // Guard against links pointing to countries without nodes (e.g. IA-only names like "Lebanon")
+  const nodeIdSet = new Set(nodes.map(n => n.id));
+  const safeLinks = links.filter(l => nodeIdSet.has(l.source) && nodeIdSet.has(l.target));
+
+  return { nodes, links: safeLinks };
 }
 
 function getEventById(id) {
