@@ -138,8 +138,16 @@ async function loadStateFromDB() {
       .single();
     if (snapshot?.value) {
       const parsed = JSON.parse(snapshot.value);
-      state.markets = parsed.markets || {};
-      state.trades = parsed.trades || [];
+      const m = parsed.markets;
+      if (m && typeof m === "object" && !Array.isArray(m)) {
+        state.markets = m;
+      } else if (Array.isArray(m) && m.length > 0) {
+        state.markets = m.reduce((acc, item) => {
+          if (item && item.id) acc[item.id] = item;
+          return acc;
+        }, {});
+      }
+      state.trades = Array.isArray(parsed.trades) ? parsed.trades : [];
       state.lastPoll = parsed.lastPoll || null;
     }
 
@@ -919,6 +927,59 @@ async function sendDiscordNotification(alert) {
 }
 
 // ─────────────────────────────────────────────
+// CLUSTER UPDATE (extracted for reuse)
+// ─────────────────────────────────────────────
+async function runClusterUpdate() {
+  const eventsArray = Object.values(state.markets);
+  const currentIds = eventsArray.map((e) => e?.id).filter(Boolean).sort().join(",");
+
+  try {
+    if (currentIds !== state.lastClusterIds) {
+      console.log("  → Liste d'events modifiée, recalcul des clusters IA...");
+      if (process.env.OPENROUTER_API_KEY) {
+        const { clusters, relationships, countries } = await computeClustersWithAI(eventsArray);
+        state.clusters = clusters || [];
+        state.clusterRelationships = relationships || [];
+        state.countries = countries || [];
+        state.lastClusterIds = currentIds;
+        console.log(`  → ${state.clusters.length} clusters, ${state.clusterRelationships.length} rels, ${state.countries.length} countries`);
+      } else {
+        state.lastClusterIds = currentIds;
+        console.warn("  ⚠ OPENROUTER_API_KEY manquant, clustering IA désactivé");
+      }
+    } else {
+      updateClusterStats(eventsArray);
+    }
+
+    if ((!state.clusters || state.clusters.length === 0) && eventsArray.length > 0) {
+      state.clusters = [{
+        name: "🌍 All Markets",
+        events: eventsArray,
+        eventCount: eventsArray.length,
+        topEvent: eventsArray[0],
+        avgProbability: 0,
+        hotCount: 0,
+        clusterScore: 0,
+      }];
+      console.log("  → Fallback cluster 'All Markets'");
+    }
+  } catch (err) {
+    console.warn("  ⚠ Clustering IA échoué, fallback cluster unique:", err.message);
+    if (eventsArray.length > 0) {
+      state.clusters = [{
+        name: "🌍 All Markets",
+        events: eventsArray,
+        eventCount: eventsArray.length,
+        topEvent: eventsArray[0],
+        avgProbability: 0,
+        hotCount: 0,
+        clusterScore: 0,
+      }];
+    }
+  }
+}
+
+// ─────────────────────────────────────────────
 // MAIN POLLER
 // ─────────────────────────────────────────────
 async function poll() {
@@ -926,6 +987,19 @@ async function poll() {
   try {
     const geoEvents = await fetchGeoEvents();
     state.useMock = false;
+
+    if (geoEvents.length === 0) {
+      console.warn("  ⚠ Polymarket a retourné 0 événements géo — conservation des données existantes");
+      if (Object.keys(state.markets).length === 0) {
+        state.useMock = true;
+        injectMockData();
+      }
+      await runClusterUpdate();
+      await saveStateToDB();
+      state.lastPoll = new Date().toISOString();
+      broadcast("state", buildClientState());
+      return;
+    }
 
     const validIds = new Set();
 
@@ -1004,53 +1078,7 @@ async function poll() {
     injectMockData();
   }
 
-  try {
-    const eventsArray = Object.values(state.markets);
-    const currentIds = eventsArray.map(e => e.id).sort().join(",");
-
-    if (currentIds !== state.lastClusterIds) {
-      console.log("  → Liste d'events modifiée, recalcul des clusters IA...");
-      if (process.env.OPENROUTER_API_KEY) {
-        const { clusters, relationships, countries } = await computeClustersWithAI(eventsArray);
-        state.clusters = clusters;
-        state.clusterRelationships = relationships || [];
-        state.countries = countries || [];
-        state.lastClusterIds = currentIds;
-        console.log(`  → ${state.clusters.length} clusters, ${state.clusterRelationships.length} rels, ${state.countries.length} countries`);
-      } else {
-        console.warn("  ⚠ OPENROUTER_API_KEY manquant, clustering IA désactivé");
-      }
-    } else {
-      updateClusterStats(eventsArray);
-      if ((!state.clusters || state.clusters.length === 0) && eventsArray.length > 0) {
-        state.clusters = [{
-          name: "🌍 All Markets",
-          events: eventsArray,
-          eventCount: eventsArray.length,
-          topEvent: eventsArray[0],
-          avgProbability: 0,
-          hotCount: 0,
-          clusterScore: 0,
-        }];
-        console.log("  → Fallback cluster 'All Markets' (pas de clusters existants)");
-      }
-    }
-  } catch (err) {
-    console.warn("  ⚠ Clustering IA échoué, fallback cluster unique:", err.message);
-    const eventsArray = Object.values(state.markets);
-    if (eventsArray.length) {
-      state.clusters = [{
-        name: "🌍 All Markets",
-        events: eventsArray,
-        eventCount: eventsArray.length,
-        topEvent: eventsArray[0],
-        avgProbability: 0,
-        hotCount: 0,
-        clusterScore: 0
-      }];
-    }
-  }
-
+  await runClusterUpdate();
   await saveStateToDB();
   state.lastPoll = new Date().toISOString();
   broadcast("state", buildClientState());
@@ -1172,6 +1200,10 @@ if (!process.env.VERCEL) {
     console.log(`\n🚀 SIGINT Dashboard → http://localhost:${PORT}\n`);
 
     await loadStateFromDB();
+
+    if (Object.keys(state.markets).length === 0) {
+      console.log("  → Aucune donnée chargée, premier poll immédiat...");
+    }
 
     poll();
     setInterval(poll, POLL_INTERVAL_MS);
