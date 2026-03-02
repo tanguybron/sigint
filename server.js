@@ -3,6 +3,7 @@ const express = require("express");
 const fetch = require("node-fetch");
 const path = require("path");
 const { supabase } = require("./lib/supabase");
+const { computeClustersWithAI } = require("./lib/clustering");
 
 const app = express();
 const PORT = 3000;
@@ -118,6 +119,7 @@ const state = {
   useMock: false,
   lastClusterIds: "",
   clusters: [],
+  clusterRelationships: [],
   signalLog: [],
   seenSignals: new Set(),
 };
@@ -146,6 +148,13 @@ async function loadStateFromDB() {
       .eq("key", "lastClusterIds")
       .single();
     state.lastClusterIds = clusterIds?.value || "";
+
+    const { data: relationships } = await supabase
+      .from("poll_state")
+      .select("value")
+      .eq("key", "cluster_relationships")
+      .single();
+    state.clusterRelationships = JSON.parse(relationships?.value || "[]");
 
     const { data: clusters } = await supabase
       .from("clusters")
@@ -212,6 +221,17 @@ async function saveStateToDB() {
         {
           key: "lastClusterIds",
           value: state.lastClusterIds || "",
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "key" }
+      );
+
+    await supabase
+      .from("poll_state")
+      .upsert(
+        {
+          key: "cluster_relationships",
+          value: JSON.stringify(state.clusterRelationships || []),
           updated_at: new Date().toISOString(),
         },
         { onConflict: "key" }
@@ -336,6 +356,7 @@ function buildClientState() {
     alerts:       state.alerts.slice(0, 20),
     trades:       state.trades.slice(0, 20),
     clusters:     state.clusters || [],
+    clusterRelationships: state.clusterRelationships || [],
     stats: {
       criticalCount,
       totalVol1h:   Math.round(totalVol1h),
@@ -451,124 +472,6 @@ function expandEventMarketsToOutcomes(apiEvent) {
     });
   }
   return outcomes;
-}
-
-function extractJsonArray(text) {
-  const start = text.indexOf("[");
-  const end = text.lastIndexOf("]");
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error("no JSON array found in AI response");
-  }
-  return text.slice(start, end + 1);
-}
-
-async function computeClustersWithAI(events) {
-  const MAX_EVENTS_FOR_CLUSTERING = 120;
-  const TIMEOUT_MS = 30_000;
-  const selected = [...events]
-    .sort((a, b) => (b.score || 0) - (a.score || 0))
-    .slice(0, MAX_EVENTS_FOR_CLUSTERING);
-
-  const titles = selected.map(e => ({ id: e.id, title: e.title }));
-
-  const fetchPromise = fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      "HTTP-Referer": "http://localhost:3000",
-      "X-Title": "FRONTRUN"
-    },
-    body: JSON.stringify({
-      model: "google/gemma-3-27b-it:free",
-      messages: [{
-        role: "user",
-        content: `Group these prediction market events into geopolitical clusters.
-Return ONLY a valid JSON array, no explanation, no markdown, no backticks.
-Each object in the array has exactly two fields:
-- "name": cluster name with a flag emoji (ex: "🇮🇷 Iran Crisis")
-- "eventIds": array of event id strings
-
-Rules:
-- Group by geopolitical situation, conflict, or region
-- Minimum 2 events per cluster
-- Events that don't fit any group go into "🌍 Other"
-- Be specific with cluster names, not generic
-
-Events to group:
-${JSON.stringify(titles)}`
-      }]
-    }),
-  });
-
-  const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error(`OpenRouter timeout (${TIMEOUT_MS / 1000}s)`)), TIMEOUT_MS)
-  );
-
-  let response;
-  try {
-    response = await Promise.race([fetchPromise, timeoutPromise]);
-  } catch (err) {
-    console.warn(`  ⚠ ${err.message} — clustering annulé`);
-    throw err;
-  }
-
-  if (!response.ok) {
-    const errText = await response.text();
-    console.warn("  ⚠ OpenRouter HTTP error", response.status, String(errText).slice(0, 300));
-    throw new Error(`OpenRouter HTTP ${response.status}`);
-  }
-
-  const data = await response.json();
-  console.log("  → OpenRouter response (tronc. 500):", JSON.stringify(data).slice(0, 500));
-  let text = data.choices?.[0]?.message?.content || "";
-  if (Array.isArray(text)) {
-    text = text.map(p => p.text || p).join("");
-  }
-  const raw = String(text).replace(/```json|```/g, "").trim();
-
-  let aiClusters;
-  try {
-    const jsonStr = extractJsonArray(raw);
-    aiClusters = JSON.parse(jsonStr);
-  } catch (err) {
-    console.warn("  ⚠ Impossible de parser la réponse IA, brut (200 chars):", raw.slice(0, 200));
-    throw err;
-  }
-
-  return aiClusters.map(cluster => {
-    const clusterEvents = (cluster.eventIds || [])
-      .map(id => events.find(e => String(e.id) === String(id)))
-      .filter(Boolean);
-
-    if (clusterEvents.length === 0) return null;
-
-    const topEvent = clusterEvents.reduce((best, e) =>
-      (e.score || 0) > (best.score || 0) ? e : best
-    , clusterEvents[0]);
-
-    const avgProbability = clusterEvents.reduce((sum, e) =>
-      sum + (e.probability || 0), 0
-    ) / clusterEvents.length;
-
-    const hotCount = clusterEvents.filter(e => (e.probability || 0) > 0.5).length;
-
-    const clusterScore = Math.min(100,
-      (topEvent.score || 0) + hotCount * 8
-    );
-
-    return {
-      name: cluster.name,
-      events: clusterEvents,
-      eventCount: clusterEvents.length,
-      topEvent,
-      avgProbability: Math.round(avgProbability * 100) / 100,
-      hotCount,
-      clusterScore
-    };
-  })
-  .filter(Boolean)
-  .sort((a, b) => b.clusterScore - a.clusterScore);
 }
 
 function updateClusterStats(events) {
@@ -1071,9 +974,11 @@ async function poll() {
     if (currentIds !== state.lastClusterIds) {
       console.log("  → Liste d'events modifiée, recalcul des clusters IA...");
       if (process.env.OPENROUTER_API_KEY) {
-        state.clusters = await computeClustersWithAI(eventsArray);
+        const { clusters, relationships } = await computeClustersWithAI(eventsArray);
+        state.clusters = clusters;
+        state.clusterRelationships = relationships || [];
         state.lastClusterIds = currentIds;
-        console.log(`  → ${state.clusters.length} clusters générés`);
+        console.log(`  → ${state.clusters.length} clusters, ${state.clusterRelationships.length} relationships`);
       } else {
         console.warn("  ⚠ OPENROUTER_API_KEY manquant, clustering IA désactivé");
       }

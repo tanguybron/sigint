@@ -316,6 +316,8 @@ let graphHighlightedCluster = null; // cluster name when event node is clicked
 let graphSimulation = null;
 let graphNodes = null;
 let graphLinks = null;
+let graphLinkLabels = null;
+let lastClusterRelationshipsJson = "";
 let volHistory   = [];
 
 // ── SSE / POLLING (Vercel uses polling only; local uses SSE) ───
@@ -829,6 +831,22 @@ function buildGraphData() {
     }
   });
 
+  // Build cross-cluster links from AI-generated relationships
+  (appState.clusterRelationships || []).forEach(rel => {
+    const nodeA = nodes.find(n => n.type === "cluster" && n.label === rel.from);
+    const nodeB = nodes.find(n => n.type === "cluster" && n.label === rel.to);
+    if (nodeA && nodeB) {
+      links.push({
+        source: nodeA.id,
+        target: nodeB.id,
+        type: "cross_cluster",
+        label: rel.label,
+        strength: (rel.strength || 0.5) * 0.08,
+        relStrength: rel.strength || 0.5,
+      });
+    }
+  });
+
   return { nodes, links };
 }
 
@@ -866,11 +884,50 @@ function renderGraph() {
     .data(links)
     .join("line")
     .attr("stroke", d => {
+      if (d.type === "cross_cluster") {
+        const s = d.relStrength || 0.5;
+        if (s > 0.7) return "rgba(255,59,92,0.5)";
+        if (s > 0.4) return "rgba(255,184,0,0.35)";
+        return "rgba(255,255,255,0.15)";
+      }
       const src = typeof d.source === "object" ? d.source : nodes.find(n => n.id === d.source);
       return (src && src.color) || "rgba(255,255,255,0.2)";
     })
-    .attr("stroke-opacity", d => d.dashed ? 0.15 : 0.3)
-    .attr("stroke-dasharray", d => d.dashed ? "3,3" : null);
+    .attr("stroke-width", d => {
+      if (d.type === "cross_cluster") {
+        const s = d.relStrength || 0.5;
+        if (s > 0.7) return 2;
+        if (s > 0.4) return 1.5;
+        return 1;
+      }
+      return 1;
+    })
+    .attr("stroke-opacity", d => {
+      if (d.type === "cross_cluster") return 1;
+      return d.dashed ? 0.15 : 0.3;
+    })
+    .attr("stroke-dasharray", d => d.type === "cross_cluster" ? "5,3" : (d.dashed ? "3,3" : null));
+
+  const linkLabel = g.append("g").attr("class", "link-labels").selectAll("g")
+    .data(links.filter(d => d.type === "cross_cluster" && d.label))
+    .join("g")
+    .attr("class", "link-label");
+  linkLabel.append("rect")
+    .attr("rx", 2).attr("ry", 2)
+    .attr("fill", "rgba(4,6,8,0.8)")
+    .attr("stroke", "none");
+  linkLabel.append("text")
+    .attr("font-family", "'Share Tech Mono', monospace")
+    .attr("font-size", 7)
+    .attr("text-anchor", "middle")
+    .attr("dy", "0.35em")
+    .text(d => d.label)
+    .attr("fill", d => {
+      const s = d.relStrength || 0.5;
+      if (s > 0.7) return "rgba(255,59,92,0.7)";
+      if (s > 0.4) return "rgba(255,184,0,0.6)";
+      return "rgba(255,255,255,0.3)";
+    });
 
   const node = g.append("g").attr("class", "nodes").selectAll("g")
     .data(nodes)
@@ -985,11 +1042,20 @@ function renderGraph() {
     });
     if (graphLinks) {
       graphLinks.attr("stroke-opacity", d => {
-        if (!graphHighlightedCluster) return d.dashed ? 0.15 : 0.3;
+        if (!graphHighlightedCluster) return d.type === "cross_cluster" ? 1 : (d.dashed ? 0.15 : 0.3);
         const srcCluster = (d.source?.type === "cluster" ? d.source?.label : d.source?.cluster) || null;
         const tgtCluster = (d.target?.type === "cluster" ? d.target?.label : d.target?.cluster) || null;
         const inCluster = srcCluster === graphHighlightedCluster || tgtCluster === graphHighlightedCluster;
-        return inCluster ? (d.dashed ? 0.15 : 0.3) : 0.02;
+        return inCluster ? (d.type === "cross_cluster" ? 1 : (d.dashed ? 0.15 : 0.3)) : 0.02;
+      });
+    }
+    if (graphLinkLabels) {
+      graphLinkLabels.attr("opacity", d => {
+        if (!graphHighlightedCluster) return 1;
+        const srcCluster = (d.source?.type === "cluster" ? d.source?.label : d.source?.cluster) || null;
+        const tgtCluster = (d.target?.type === "cluster" ? d.target?.label : d.target?.cluster) || null;
+        const inCluster = srcCluster === graphHighlightedCluster || tgtCluster === graphHighlightedCluster;
+        return inCluster ? 1 : 0.1;
       });
     }
   }
@@ -998,7 +1064,9 @@ function renderGraph() {
 
   // Force simulation
   const simulation = d3.forceSimulation(nodes)
-    .force("link", d3.forceLink(links).id(d => d.id).strength(d => (d.strength || 0.5) * 0.3).distance(d => d.dashed ? 60 : 120))
+    .force("link", d3.forceLink(links).id(d => d.id)
+      .strength(d => d.type === "cross_cluster" ? (d.strength || 0.04) : (d.strength || 0.5) * 0.3)
+      .distance(d => d.type === "cross_cluster" ? 180 : (d.dashed ? 60 : 120)))
     .force("charge", d3.forceManyBody().strength(d => d.type === "cluster" ? -400 : -80))
     .force("center", d3.forceCenter(width / 2, height / 2))
     .force("collision", d3.forceCollide().radius(d => d.size + 4));
@@ -1007,11 +1075,22 @@ function renderGraph() {
     link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
        .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
     node.attr("transform", d => `translate(${d.x},${d.y})`);
+    linkLabel.attr("transform", d => `translate(${(d.source.x + d.target.x) / 2},${(d.source.y + d.target.y) / 2})`)
+      .each(function() {
+        const g = d3.select(this);
+        const text = g.select("text");
+        if (text.node()) {
+          const b = text.node().getBBox();
+          g.select("rect").attr("x", b.x - 3).attr("y", b.y - 1).attr("width", b.width + 6).attr("height", b.height + 2);
+        }
+      });
   });
 
   graphSimulation = simulation;
   graphNodes = node;
   graphLinks = link;
+  graphLinkLabels = linkLabel;
+  lastClusterRelationshipsJson = JSON.stringify(appState.clusterRelationships || []);
 }
 
 function updateGraph() {
@@ -1036,10 +1115,11 @@ function updateGraph() {
     return;
   }
 
-  const { nodes } = buildGraphData();
+  const { nodes, links } = buildGraphData();
   const prevIds = (graphNodes.data() || []).map(d => d.id).sort().join(",");
   const currIds = nodes.map(d => d.id).sort().join(",");
-  if (prevIds !== currIds) {
+  const currRelJson = JSON.stringify(appState.clusterRelationships || []);
+  if (prevIds !== currIds || currRelJson !== lastClusterRelationshipsJson) {
     renderGraph();
     return;
   }
