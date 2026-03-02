@@ -2,6 +2,7 @@ require("dotenv").config();
 const express = require("express");
 const fetch = require("node-fetch");
 const path = require("path");
+const { supabase } = require("./lib/supabase");
 
 const app = express();
 const PORT = 3000;
@@ -117,7 +118,135 @@ const state = {
   useMock: false,
   lastClusterIds: "",
   clusters: [],
+  signalLog: [],
+  seenSignals: new Set(),
 };
+
+// ─────────────────────────────────────────────
+// SUPABASE — Persistance
+// ─────────────────────────────────────────────
+async function loadStateFromDB() {
+  if (!supabase) return;
+  try {
+    const { data: snapshot } = await supabase
+      .from("poll_state")
+      .select("value")
+      .eq("key", "latest_snapshot")
+      .single();
+    if (snapshot?.value) {
+      const parsed = JSON.parse(snapshot.value);
+      state.markets = parsed.markets || {};
+      state.trades = parsed.trades || [];
+      state.lastPoll = parsed.lastPoll || null;
+    }
+
+    const { data: clusterIds } = await supabase
+      .from("poll_state")
+      .select("value")
+      .eq("key", "lastClusterIds")
+      .single();
+    state.lastClusterIds = clusterIds?.value || "";
+
+    const { data: clusters } = await supabase
+      .from("clusters")
+      .select("*")
+      .order("score", { ascending: false });
+    state.clusters = (clusters || []).map((c) => ({
+      name: c.name,
+      events: (c.event_ids || [])
+        .map((id) => state.markets[id])
+        .filter(Boolean),
+      eventCount: c.event_count ?? 0,
+      topEvent: c.top_event_title
+        ? {
+            title: c.top_event_title,
+            probability: c.top_event_probability ?? 0,
+          }
+        : null,
+      avgProbability: c.avg_probability ?? 0,
+      hotCount: c.hot_count ?? 0,
+      clusterScore: c.score ?? 0,
+    }));
+
+    const { data: signals } = await supabase
+      .from("signals")
+      .select("*")
+      .order("detected_at", { ascending: false })
+      .limit(100);
+    state.signalLog = signals || [];
+
+    state.seenSignals = new Set(signals?.map((s) => s.id) || []);
+
+    console.log(
+      `  → État chargé depuis Supabase : ${signals?.length || 0} signaux, ${clusters?.length || 0} clusters`
+    );
+  } catch (err) {
+    console.warn(
+      "  ⚠ Impossible de charger depuis Supabase, état vide :",
+      err.message
+    );
+  }
+}
+
+async function saveStateToDB() {
+  if (!supabase) return;
+  try {
+    await supabase
+      .from("poll_state")
+      .upsert(
+        {
+          key: "latest_snapshot",
+          value: JSON.stringify({
+            markets: state.markets,
+            trades: state.trades.slice(0, 50),
+            lastPoll: state.lastPoll,
+          }),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "key" }
+      );
+
+    await supabase
+      .from("poll_state")
+      .upsert(
+        {
+          key: "lastClusterIds",
+          value: state.lastClusterIds || "",
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "key" }
+      );
+
+    const clientState = buildClientState();
+    const threatScore = clientState.stats?.threatScore;
+    if (threatScore != null) {
+      await supabase.from("threat_history").insert({ score: threatScore });
+      await supabase.rpc("trim_threat_history");
+    }
+
+    if (state.clusters?.length > 0) {
+      await supabase
+        .from("clusters")
+        .upsert(
+          state.clusters.map((c) => ({
+            id: c.name,
+            name: c.name,
+            score: c.clusterScore ?? c.score ?? 0,
+            hot_count: c.hotCount ?? 0,
+            event_count: c.eventCount ?? 0,
+            avg_probability: c.avgProbability ?? 0,
+            top_event_title: c.topEvent?.title ?? null,
+            top_event_probability: c.topEvent?.probability ?? null,
+            event_ids: (c.events || []).map((e) => e.id),
+            computed_at: new Date().toISOString(),
+          })),
+          { onConflict: "id" }
+        );
+    }
+  } catch (err) {
+    console.warn("  ⚠ Erreur sauvegarde Supabase :", err.message);
+  }
+}
 
 // ─────────────────────────────────────────────
 // SSE — Server-Sent Events pour le frontend
@@ -967,6 +1096,7 @@ async function poll() {
     }
   }
 
+  await saveStateToDB();
   state.lastPoll = new Date().toISOString();
   broadcast("state", buildClientState());
 }
@@ -1069,8 +1199,11 @@ function injectMockData() {
 // DÉMARRAGE (skip on Vercel serverless)
 // ─────────────────────────────────────────────
 if (!process.env.VERCEL) {
-  app.listen(PORT, () => {
+  app.listen(PORT, async () => {
     console.log(`\n🚀 SIGINT Dashboard → http://localhost:${PORT}\n`);
+
+    await loadStateFromDB();
+
     poll();
     setInterval(poll, POLL_INTERVAL_MS);
   });
