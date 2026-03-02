@@ -870,14 +870,12 @@ function renderGraph() {
   const tooltip = document.getElementById("graph-tooltip");
   if (!container || !svg || !d3) return;
 
-  const countries = appState.countries || [];
-  if (countries.length === 0) return;
-
   const rect = container.getBoundingClientRect();
   const width = rect.width || 800;
   const height = rect.height || 500;
 
   const { nodes, links } = buildGraphData();
+  if (!nodes || !nodes.length) return;
 
   svg.innerHTML = "";
   const g = d3.select(svg).append("g");
