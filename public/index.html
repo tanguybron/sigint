@@ -798,6 +798,55 @@ const BLOC_COLORS = {
   conflict_zone: "#a064ff",
 };
 
+const COUNTRY_KEYWORDS = [
+  { name: "United States", flag: "🇺🇸", bloc: "western", aliases: ["united states", "u.s.", "usa", "us ", "america", "american"] },
+  { name: "Israel", flag: "🇮🇱", bloc: "western", aliases: ["israel", "israeli"] },
+  { name: "Iran", flag: "🇮🇷", bloc: "eastern", aliases: ["iran", "iranian"] },
+  { name: "Russia", flag: "🇷🇺", bloc: "eastern", aliases: ["russia", "russian", "kremlin"] },
+  { name: "China", flag: "🇨🇳", bloc: "eastern", aliases: ["china", "chinese", "beijing"] },
+  { name: "North Korea", flag: "🇰🇵", bloc: "eastern", aliases: ["north korea", "kim jong", "pyongyang"] },
+  { name: "Ukraine", flag: "🇺🇦", bloc: "conflict_zone", aliases: ["ukraine", "ukrainian", "kyiv"] },
+  { name: "Gaza/Palestine", flag: "🇵🇸", bloc: "conflict_zone", aliases: ["gaza", "palestine", "palestinian"] },
+  { name: "Taiwan", flag: "🇹🇼", bloc: "conflict_zone", aliases: ["taiwan", "taipei"] },
+  { name: "Saudi Arabia", flag: "🇸🇦", bloc: "neutral", aliases: ["saudi", "saudi arabia"] },
+  { name: "Turkey", flag: "🇹🇷", bloc: "neutral", aliases: ["turkey", "erdogan"] },
+];
+
+function inferCountriesFromMarkets() {
+  const markets = appState.markets || [];
+  const map = new Map();
+
+  markets.forEach(m => {
+    const text = (m.title || "").toLowerCase();
+    COUNTRY_KEYWORDS.forEach(c => {
+      if (c.aliases.some(a => text.includes(a))) {
+        let entry = map.get(c.name);
+        if (!entry) {
+          entry = {
+            name: c.name,
+            flag: c.flag,
+            bloc: c.bloc,
+            activity: 0,
+            involvedEventIds: [],
+            relationships: [],
+          };
+          map.set(c.name, entry);
+        }
+        entry.involvedEventIds.push(m.id);
+        entry.activity += m.probability || 0;
+      }
+    });
+  });
+
+  const list = Array.from(map.values());
+  if (!list.length) return [];
+  const maxAct = Math.max(...list.map(c => c.activity || 0), 1);
+  list.forEach(c => {
+    c.activity = Math.min(1, (c.activity || 0) / maxAct);
+  });
+  return list;
+}
+
 function buildGraphData() {
   const countryMap = new Map();
 
