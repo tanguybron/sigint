@@ -168,7 +168,7 @@ async function loadStateFromDB() {
       .from("clusters")
       .select("*")
       .order("score", { ascending: false });
-    state.clusters = (clusters || []).map((c) => ({
+    const loadedClusters = (clusters || []).map((c) => ({
       name: c.name,
       events: (c.event_ids || [])
         .map((id) => state.markets[id])
@@ -184,6 +184,23 @@ async function loadStateFromDB() {
       hotCount: c.hot_count ?? 0,
       clusterScore: c.score ?? 0,
     }));
+
+    const validClusters = loadedClusters.filter((c) => (c.events || []).length > 0);
+    const marketsArray = Object.values(state.markets || {});
+    if (validClusters.length === 0 && marketsArray.length > 0) {
+      state.clusters = [{
+        name: "🌍 All Markets",
+        events: marketsArray,
+        eventCount: marketsArray.length,
+        topEvent: marketsArray[0],
+        avgProbability: 0,
+        hotCount: 0,
+        clusterScore: 0,
+      }];
+      console.log("  → Fallback cluster 'All Markets' (clusters DB vides ou event_ids invalides)");
+    } else {
+      state.clusters = validClusters.length > 0 ? validClusters : loadedClusters;
+    }
 
     const { data: signals } = await supabase
       .from("signals")
@@ -1005,6 +1022,18 @@ async function poll() {
       }
     } else {
       updateClusterStats(eventsArray);
+      if ((!state.clusters || state.clusters.length === 0) && eventsArray.length > 0) {
+        state.clusters = [{
+          name: "🌍 All Markets",
+          events: eventsArray,
+          eventCount: eventsArray.length,
+          topEvent: eventsArray[0],
+          avgProbability: 0,
+          hotCount: 0,
+          clusterScore: 0,
+        }];
+        console.log("  → Fallback cluster 'All Markets' (pas de clusters existants)");
+      }
     }
   } catch (err) {
     console.warn("  ⚠ Clustering IA échoué, fallback cluster unique:", err.message);
@@ -1110,6 +1139,20 @@ function injectMockData() {
     { marketId: "mock-iran-nuclear", marketTitle: "Iran capacité nucléaire militaire", amount: 32000, side: "YES", wallet: "0x2d8c...a07f", isSmartWallet: true, timestamp: new Date(Date.now() - 18 * 60_000).toISOString() },
   ];
   state.trades = mockTrades;
+
+  // Mock clusters (when no AI clustering)
+  const mockMarketsArray = mockMarkets.map((m) => state.markets[m.id]).filter(Boolean);
+  if (mockMarketsArray.length > 0 && (!state.clusters || state.clusters.length === 0)) {
+    state.clusters = [{
+      name: "🌍 All Markets",
+      events: mockMarketsArray,
+      eventCount: mockMarketsArray.length,
+      topEvent: mockMarketsArray[0],
+      avgProbability: 0,
+      hotCount: 0,
+      clusterScore: 0,
+    }];
+  }
 
   // Mock alerts
   if (state.alerts.length === 0) {
