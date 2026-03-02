@@ -320,7 +320,7 @@
 
 <script>
 // ── ÉTAT LOCAL ──────────────────────────────────────────────
-let appState = { markets:[], alerts:[], trades:[], stats:{}, clusters:[] };
+let appState = { markets:[], alerts:[], trades:[], stats:{}, clusters:[], countries:[], strategicPoints:[] };
 let activeFilter = "all";
 let activeSort   = "prob";
 let activeView   = "markets"; // "markets" | "clusters" (dashboard only)
@@ -799,7 +799,31 @@ const BLOC_COLORS = {
 };
 
 function buildGraphData() {
-  const nodes = (appState.countries || []).map(country => ({
+  const countryMap = new Map();
+
+  // Always include inferred countries so that \"small\" actors appear
+  (inferCountriesFromMarkets() || []).forEach(c => {
+    countryMap.set(c.name, { ...c });
+  });
+
+  // Merge / override with AI countries when available
+  (appState.countries || []).forEach(c => {
+    const existing = countryMap.get(c.name);
+    if (existing) {
+      countryMap.set(c.name, {
+        ...existing,
+        ...c,
+        activity: c.activity ?? existing.activity,
+        involvedEventIds: Array.from(new Set([...(existing.involvedEventIds || []), ...(c.involvedEventIds || [])])),
+      });
+    } else {
+      countryMap.set(c.name, { ...c });
+    }
+  });
+
+  const baseCountries = Array.from(countryMap.values());
+
+  const nodes = (baseCountries || []).map(country => ({
     id: country.name,
     type: "country",
     label: `${country.flag || ""} ${country.name}`,
@@ -817,7 +841,7 @@ function buildGraphData() {
   const seenLinks = new Set();
   const links = [];
 
-  (appState.countries || []).forEach(country => {
+  baseCountries.forEach(country => {
     (country.relationships || []).forEach(rel => {
       const key = [country.name, rel.with].sort().join("_");
       if (seenLinks.has(key)) return;
@@ -937,6 +961,7 @@ function renderGraph() {
 
   node.on("mouseover", (ev, d) => {
     const events = (d.involvedEventIds || []).slice(0, 4).map(id => getEventById(id)).filter(Boolean);
+    const points = (appState.strategicPoints || []).filter(p => p.countryName === d.name).slice(0, 4);
     const blocLabel = (d.bloc || "").replace("_", " ");
     tooltip.style.display = "block";
     tooltip.innerHTML = `
@@ -946,6 +971,8 @@ function renderGraph() {
       <div style="height:4px;background:rgba(255,255,255,0.1);margin-bottom:8px"><div style="height:100%;width:${(d.activity || 0) * 100}%;background:${d.color}"></div></div>
       ${events.length ? `<div style="font-size:9px;color:var(--text-dim);margin-top:6px">Related events:</div>` : ""}
       ${events.map(e => `<div style="font-size:10px;margin-top:3px">${(e.title || "").slice(0, 50)}… — ${Math.round((e.probability || 0) * 100)}%</div>`).join("")}
+      ${points.length ? `<div style="font-size:9px;color:var(--text-dim);margin-top:8px">Strategic points:</div>` : ""}
+      ${points.map(p => `<div style="font-size:10px;margin-top:3px">• ${p.name} <span style="color:${d.color}">${p.type || ""}</span></div>`).join("")}
     `;
     tooltip.style.left = (ev.pageX + 12) + "px";
     tooltip.style.top = (ev.pageY + 12) + "px";
